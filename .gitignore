@@ -1,0 +1,27 @@
+# Secrets — never commit
+.env
+
+# Python environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs (generated at runtime by launchd)
+*.log
+*.log.out
+*.log.err
+automation.log
+
+# Runtime state
+jobs-seen.json
+
+# Personal files
+resume-summary.txt
+
+# Debug screenshots
+*.png
+
+# Claude Code
+.claude/
