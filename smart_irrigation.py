@@ -55,18 +55,18 @@ def main():
         return
 
     # Step 2: Evaluate
-    threshold = 40
-    below_threshold = [ch for ch, val in readings.items() if val < threshold]
+    threshold = 25
+    avg_moisture = round(sum(readings.values()) / len(readings)) if readings else 0
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     report_lines = [f"Irrigation Check - {now}"]
     for ch, val in readings.items():
         report_lines.append(f"{ch}: {val}%")
 
-    if not below_threshold:
-        report_text = "\n".join(report_lines)
-        report_lines.append("\nStatus: Skipped. All sensors above 20%.")
-        log_event(f"Irrigation Check finished: Skipped (all sensors above threshold). Readings: {readings}")
+    if avg_moisture >= threshold:
+        report_lines.append(f"\nAverage moisture: {avg_moisture}%")
+        report_lines.append(f"Status: Skipped. Average moisture ({avg_moisture}%) is at or above 25% threshold.")
+        log_event(f"Irrigation Check finished: Skipped (average {avg_moisture}% is at or above 25%). Readings: {readings}")
         notify("Smart Irrigation Status: No Watering Needed", "\n".join(report_lines))
         return
 
@@ -76,12 +76,12 @@ def main():
         "Authorization": f"Bearer {os.getenv('RACHIO_API_KEY')}",
         "Content-Type": "application/json"
     }
-    
+
     if not os.getenv("RACHIO_API_KEY"):
          log_event(f"Irrigation failed: Missing RACHIO_API_KEY in .env. Readings: {readings}")
          notify("Irrigation Error", f"Missing Rachio configuration in .env. Readings: {readings}")
          return
-         
+
     payload = {
         "id": "18401f7e-b1c4-49b5-a1e4-4c3fdd24c8dc",
         "duration": 900
@@ -89,9 +89,10 @@ def main():
     try:
         rachio_resp = requests.put(rachio_url, headers=headers, json=payload)
         status_code = rachio_resp.status_code
-        report_lines.append(f"\nStatus: Triggered (Zones below 40%: {', '.join(below_threshold)})")
+        report_lines.append(f"\nAverage moisture: {avg_moisture}%")
+        report_lines.append(f"Status: Triggered. Average moisture ({avg_moisture}%) is below 25% threshold.")
         report_lines.append(f"Rachio API Status: HTTP {status_code}")
-        log_event(f"Irrigation Triggered: HTTP {status_code} for {', '.join(below_threshold)}. Readings: {readings}")
+        log_event(f"Irrigation Triggered: average {avg_moisture}% below 25%. HTTP {status_code}. Readings: {readings}")
     except Exception as e:
         log_event(f"Rachio trigger failed: {e}. Readings: {readings}")
         report_lines.append(f"\nStatus: Failed to trigger Rachio: {e}")

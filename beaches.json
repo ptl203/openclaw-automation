@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Scripps Beach, La Jolla",
+    "lat": 32.8662,
+    "lng": -117.2537,
+    "facing_dir": 270,
+    "notes": "Reef break, best at mid-high tide"
+  },
+  {
+    "name": "Law Street Beach, Pacific Beach",
+    "lat": 32.801655,
+    "lng": -117.260314,
+    "facing_dir": 275,
+    "notes": "Sandy beach break with shifting sandbars; softer and slower than surrounding breaks, best on west/northwest swell with east offshore wind"
+  },
+  {
+    "name": "Ocean Beach (OB Pier)",
+    "lat": 32.7505,
+    "lng": -117.2510,
+    "facing_dir": 280,
+    "notes": "Beach and reef break, shifty and unpredictable; holds up to 8ft, best on west groundswell"
+  }
+]

@@ -1,25 +1,20 @@
 import os
-import sys
-import requests
+import json
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from google import genai
-from google.genai import types
-from utils import notify, log_event
+from utils import notify, log_event, compass_label, wind_ranges, filter_nearby_hours, fetch_stormglass
+
+LOCATION_NAME = os.getenv("SURF_LOCATION_NAME", "Scripps Beach, La Jolla, CA")
+LAT = float(os.getenv("SURF_LAT", "32.8662"))
+LNG = float(os.getenv("SURF_LNG", "-117.2537"))
+FACING_DIR = int(os.getenv("SURF_FACING_DIR", "270"))
+
 
 def get_surf_data():
-    api_key = os.getenv("STORMGLASS_API_KEY")
-    if not api_key:
-        raise ValueError("STORMGLASS_API_KEY not set")
-    lat = 32.8662
-    lng = -117.2537
     params = "waveHeight,wavePeriod,waveDirection,swellHeight,swellPeriod,swellDirection,secondarySwellHeight,secondarySwellPeriod,windWaveHeight,windSpeed,windDirection,waterTemperature"
-    url = f"https://api.stormglass.io/v2/weather/point?lat={lat}&lng={lng}&params={params}"
-    headers = {"Authorization": api_key}
-    
-    resp = requests.get(url, headers=headers)
-    resp.raise_for_status()
-    return resp.json()
+    return fetch_stormglass(LAT, LNG, params)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -28,10 +23,10 @@ def main():
     args = parser.parse_args()
 
     if not args.am and not args.pm:
-         args.am = True # default
-         
+        args.am = True
+
     log_event(f"Starting Surf Report ({'AM' if args.am else 'PM'})...")
-    
+
     try:
         raw_data = get_surf_data()
     except Exception as e:
@@ -40,30 +35,53 @@ def main():
         return
 
     now = datetime.now()
-    
-    # Prompt
-    context = "5AM dawn patrol report" if args.am else "3PM afternoon report"
-    verdict_type = "Dawn patrol verdict" if args.am else "Afternoon verdict"
-    prompt = f"""You are executing a live surf conditions check for Scripps Beach, La Jolla, CA. This will be sent via EMAIL. Do all work silently.
+    nearby_data = filter_nearby_hours(raw_data)
 
-GEOGRAPHY NOTE: Scripps Beach faces due west (approximately 270°). The shoreline runs roughly north-south.
-- ONSHORE wind: coming FROM the west, roughly 225°–315°
-- OFFSHORE wind: coming FROM the east, roughly 45°–135°
-- CROSS-SHORE wind: coming FROM the north or south, roughly 315°–45° or 135°–225°
+    context = "5AM dawn patrol report" if args.am else "3PM afternoon report"
+    facing_label = compass_label(FACING_DIR)
+    on_start, on_end, off_start, off_end = wind_ranges(FACING_DIR)
+    header_emoji = "🌅" if args.am else "🏄"
+    header_label = "DAWN PATROL" if args.am else "AFTERNOON CHECK"
+
+    prompt = f"""You are executing a live surf conditions check for {LOCATION_NAME}. This will be sent via EMAIL. Do all work silently.
+
+GEOGRAPHY NOTE: {LOCATION_NAME} faces {facing_label} (approximately {FACING_DIR}°).
+- ONSHORE wind: coming FROM roughly {on_start}°–{on_end}° — choppy, blown-out conditions (bad for surfing)
+- OFFSHORE wind: coming FROM roughly {off_start}°–{off_end}° — clean, groomed waves (good for surfing)
+- CROSS-SHORE wind: anything else — often acceptable depending on strength
+
+WAVE SIZE GUIDE (use these exact labels in the report):
+- Under 2 ft: small
+- 2–4 ft: decent
+- 4+ ft: big surf
+
+SURF QUALITY RATING GUIDE (tuned for preference for 2–4 ft waves as ideal size):
+- ★★★★★  Decent (2–4 ft) + offshore wind — perfect conditions
+- ★★★★☆  Decent + light cross-shore, OR big surf (4+ ft) + offshore wind
+- ★★★☆☆  Small surf + offshore wind, OR decent + moderate onshore, OR big surf + cross-shore
+- ★★☆☆☆  Small + onshore, OR big surf + strong onshore (too big/messy)
+- ★☆☆☆☆  Essentially flat, OR blown out regardless of size
 
 TIME CONTEXT: This is the {context}. Current time: {now.strftime('%Y-%m-%d %H:%M:%S')}.
-RAW DATA from Stormglass API (find the closest hour):
-{raw_data}
+RAW DATA from Stormglass API (nearest 3 hours only):
+{json.dumps(nearby_data, indent=2)}
 
-STEP 3 — Silently convert all units:
+STEP 1 — Find the data point closest to the current time.
+
+STEP 2 — Silently convert all units:
 - Wave/swell heights: meters → feet
 - Wind speed: m/s → knots
 - Water temperature: °C → °F
 
+STEP 3 — Determine wind quality (offshore/onshore/cross-shore), wave size label, and star rating.
+
 STEP 4 — Output ONLY this report, formatted for EMAIL:
 
-{'🌅 SCRIPPS BEACH DAWN PATROL' if args.am else '🏄 SCRIPPS BEACH AFTERNOON CHECK'}
+{header_emoji} {LOCATION_NAME.upper()} {header_label}
 {now.strftime('%A, %B %d, %Y - %I:%M %p')}
+
+Rating: [★ out of ★★★★★]
+Size: [small/decent/big surf] ([X.X ft])
 
 WAVES
 ---------------------------------
@@ -84,7 +102,7 @@ Water temp: [waterTemperature in °F]°F
 
 VERDICT
 ---------------------------------
-[2-3 sentence summary]
+[2-3 sentence summary using the size label and quality assessment]
 """
 
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -98,6 +116,7 @@ VERDICT
     except Exception as e:
         log_event(f"Surf Report Gemini failed: {e}")
         notify("Surf Report Error", f"Gemini generation failed: {e}")
+
 
 if __name__ == "__main__":
     main()
