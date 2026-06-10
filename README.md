@@ -63,5 +63,6 @@ This generates macOS `launchd` plist files, installs them into `~/Library/Launch
 ## Architecture
 
 - **Email delivery:** All jobs send output via SMTP using `utils.py`. Emails use the `[LobsterClaw]` subject prefix.
-- **AI models:** `lithrop_ledger.py` uses `gemini-2.5-pro` for full newsletter synthesis. `job_scraper.py` uses `gemini-2.5-flash-lite` for extraction.
+- **AI models:** `lithrop_ledger.py` uses `gemini-2.5-pro` for full newsletter synthesis. `job_scraper.py` uses `gemini-2.5-flash` for resume keyword extraction and `gemini-2.5-pro` (with Google Search tool) for the broad job search.
+- **Job board sources:** Verified tiers — Greenhouse, Lever, Ashby, and Workday CXS APIs. AI-assisted tier (Gemini + Google Search) for companies without a usable public board; AI-tier links are validated before emailing.
 - **Scheduling:** Native macOS `launchd` — no cron, no third-party scheduler. Jobs are re-run on wake if they were missed during sleep.
