@@ -68,10 +68,10 @@ def main():
     generate_plist("com.openclaw.job_scraper", "job_scraper.py", 16, 0, weekday=3)
     # Smart Irrigation: 5:00 AM daily (Script skips Mon/Thu)
     generate_plist("com.openclaw.smart_irrigation", "smart_irrigation.py", 5, 0)
-    # Surf Report AM: 5:00 AM daily
-    generate_plist("com.openclaw.surf_report_am", "surf_report.py", 5, 0, extra_args="--am")
-    # Surf Report PM: 3:00 PM (15) daily
-    generate_plist("com.openclaw.surf_report_pm", "surf_report.py", 15, 0, extra_args="--pm")
+    # Surf Compare AM: 5:00 AM daily — ranks all beaches in beaches.json
+    generate_plist("com.openclaw.surf_compare_am", "surf_compare.py", 5, 0, extra_args="--am")
+    # Surf Compare PM: 3:00 PM (15) daily
+    generate_plist("com.openclaw.surf_compare_pm", "surf_compare.py", 15, 0, extra_args="--pm")
     # Golf Booking: Sun (0) 6:58 PM (18:58)
     generate_plist("com.openclaw.golf_booking", "golf_booking.py", 18, 58, weekday=0)
     

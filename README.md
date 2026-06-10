@@ -7,7 +7,7 @@ A personal macOS automation suite that runs scheduled jobs for daily news, surf 
 | Script | Schedule | Description |
 |---|---|---|
 | `lithrop_ledger.py` | Daily @ 7:00 AM | Generates and emails the Lithrop Ledger: a daily newsletter with market data, world/US/finance/tech news, and an uplifting story. Powered by Gemini AI. |
-| `surf_report.py` | Daily @ 5:00 AM & 3:00 PM | Fetches Stormglass wave and wind data for a local break and emails a morning and afternoon surf verdict. |
+| `surf_compare.py` | Daily @ 5:00 AM & 3:00 PM | Fetches Stormglass data for all beaches in `beaches.json` in parallel, ranks them using a deterministic size/wind/period score, and emails a GO/NO-GO verdict with full detail for each beach. (`surf_report.py` archived to `surf_archive/`) |
 | `smart_irrigation.py` | Daily @ 5:00 AM | Reads Ecowitt soil moisture sensor; waters Zone 3 via Rachio for 15 minutes if moisture is below 30%. |
 | `job_scraper.py` | Wednesdays @ 4:00 PM | Searches San Diego tech/defense job listings via Google, matches against `resume-summary.txt`, and emails a consolidated report of new matches. |
 | `golf_archive/golf_booking.py` | Sundays @ 6:58 PM | Polls the SD Golf API for Torrey Pines North twilight tee times and attempts to book one. |
