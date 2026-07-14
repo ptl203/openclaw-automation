@@ -16,6 +16,10 @@ automation.log
 
 # Runtime state
 jobs-seen.json
+irrigation-history.json
+
+# Generated previews
+ledger_preview.html
 
 # Personal files
 resume-summary.txt
