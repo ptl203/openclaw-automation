@@ -7,12 +7,12 @@ A personal macOS automation suite that runs scheduled jobs for daily news, surf 
 | Script | Schedule | Description |
 |---|---|---|
 | `lithrop_ledger.py` | Daily @ 7:00 AM | Generates and emails the Lithrop Ledger: a daily newsletter with market data, world/US/finance/tech news, a sports section (PLL standings/schedule + Redwoods news, Padres recap/standing/news, FIFA World Cup daily schedule), and an uplifting story. Powered by Gemini AI. |
-| `surf_compare.py` | Daily @ 5:00 AM & 3:00 PM | Fetches Stormglass data for all beaches in `beaches.json` in parallel, ranks them using a deterministic size/wind/period score, and emails a GO/NO-GO verdict with full detail for each beach. (`surf_report.py` archived to `surf_archive/`) |
-| `smart_irrigation.py` | Daily @ 5:00 AM | Reads Ecowitt soil moisture sensor; waters Zone 3 via Rachio for 15 minutes if moisture is below 30%. |
+| `surf_compare.py` | Daily @ 5:00 AM & 3:00 PM | Fetches Stormglass wave data for all beaches in `beaches.json` in parallel plus one regional tide call, scores every hour of the session window (size / wind / period / organization / per-beach swell exposure / tide fit), ranks beaches by their best hour, and emails a GO/NO-GO verdict (GO = ≥4★) with current tide and a next-24h outlook. (`surf_report.py` archived to `surf_archive/`) |
+| `smart_irrigation.py` | Daily @ 5:00 AM | Reads Ecowitt soil moisture sensors; waters Zone 3 via Rachio for 25 minutes if average moisture is below 60%. Tracks history in `irrigation-history.json`, warns when waterings stop moving the sensors, and appends a 7-day trend on Sundays. |
 | `job_scraper.py` | Wednesdays @ 4:00 PM | Searches San Diego tech/defense job listings via Google, matches against `resume-summary.txt`, and emails a consolidated report of new matches. |
-| `timecard_reminder.py` | Daily @ 6:00 PM | Emails a reminder to enter and sign the day's Booz Allen timecard. |
+| `timecard_reminder.py` | Weekdays @ 6:00 PM | Emails a reminder to enter and sign the day's Booz Allen timecard (skips weekends). |
 | `golf_archive/golf_booking.py` | Sundays @ 6:58 PM | Polls the SD Golf API for Torrey Pines North twilight tee times and attempts to book one. |
-| `log_maintenance.py` | Scheduled | Cleans up old log files. |
+| `log_maintenance.py` | Sundays @ 6:00 AM | Rotates `automation.log` (keeps 2 old copies) and truncates oversized launchd stdout/stderr logs. |
 
 ## Setup
 
@@ -69,3 +69,5 @@ Jobs run as **system LaunchDaemons**, not per-user LaunchAgents. This matters: L
 - **AI models:** `lithrop_ledger.py` uses `gemini-3.1-pro-preview` for full newsletter synthesis. `job_scraper.py` uses `gemini-2.5-flash` for resume keyword extraction and `gemini-2.5-pro` (with Google Search tool) for the broad job search.
 - **Job board sources:** Verified tiers — Greenhouse, Lever, Ashby, and Workday CXS APIs. AI-assisted tier (Gemini + Google Search) for companies without a usable public board; AI-tier links are validated before emailing.
 - **Scheduling:** Native macOS `launchd`, as system LaunchDaemons — no cron, no third-party scheduler, no GUI-login dependency. Jobs still won't fire while the Mac is fully asleep (only while logged out at the login window, which daemons now handle); `pmset repeat wake` covers that case.
+- **Reliability:** Every job calls `wait_for_network()` at startup (post-wake runs used to hit DNS failures before Wi-Fi reassociated). `log_event()` redacts API keys from anything written to `automation.log`. Email sends retry once and log their failures.
+- **Stormglass quota:** free tier is 10 calls/day (UTC); the surf jobs use 8 (3 beaches + 1 tide, twice daily). A 402 day emails a short quota notice instead of a raw error.

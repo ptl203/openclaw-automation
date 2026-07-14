@@ -10,7 +10,7 @@ from difflib import SequenceMatcher
 from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
-from utils import notify, log_event, send_html_email
+from utils import notify, log_event, send_html_email, wait_for_network
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 @retry(
@@ -238,6 +238,13 @@ def get_market_data():
                 stock = yf.Ticker(ticker)
                 hist = stock.history(period="5d")
 
+                # yfinance returns None/empty when rate-limited — retrying immediately
+                # just repeats the failure, so surface it clearly and move on.
+                if hist is None or hist.empty:
+                    log_event(f"{name}: yfinance returned no history (likely rate-limited)")
+                    lines.append(f"| {name} | N/A | N/A |")
+                    break
+
                 if len(hist) < 2:
                     lines.append(f"| {name} | N/A | N/A |")
                     break # Success but no data
@@ -283,19 +290,28 @@ def get_market_data():
     return "\n".join(lines)
 
 
+# timeframe/removeduplicate are paid-tier NewsData params. The free plan rejects
+# them on every call, so after one rejection in a run we stop sending them and
+# save the wasted API call per remaining category.
+_newsdata_enhanced_ok = True
+
+
 def fetch_news_category(category, country="us,gb", prioritydomain="top", max_age_hours=24):
+    global _newsdata_enhanced_ok
     api_key = os.getenv("NEWSDATA_API_KEY")
     if not api_key or api_key == "your_api_key_here":
         return f"({category} news skipped - NEWSDATA_API_KEY not configured)"
 
     base_url = f"https://newsdata.io/api/1/news?apikey={api_key}&category={category}&language=en&country={country}&prioritydomain={prioritydomain}"
     try:
-        # timeframe/removeduplicate are paid-tier params on NewsData; try them, fall back to the
-        # bare URL if the plan rejects them. The client-side filters below work either way.
-        resp = requests.get(base_url + "&timeframe=24&removeduplicate=1", timeout=30).json()
-        if resp.get('status') == 'error':
-            msg = str(resp.get('results', {}).get('message', 'Unknown'))
-            log_event(f"NewsData rejected enhanced params for {category} ({msg}); retrying with basic params")
+        if _newsdata_enhanced_ok:
+            resp = requests.get(base_url + "&timeframe=24&removeduplicate=1", timeout=30).json()
+            if resp.get('status') == 'error':
+                msg = str(resp.get('results', {}).get('message', 'Unknown'))
+                log_event(f"NewsData rejected enhanced params for {category} ({msg}); using basic params this run")
+                _newsdata_enhanced_ok = False
+                resp = requests.get(base_url, timeout=30).json()
+        else:
             resp = requests.get(base_url, timeout=30).json()
         if resp.get('status') == 'error':
             log_event(f"NewsData API Error: {resp.get('results', {}).get('message', 'Unknown')}")
@@ -593,6 +609,7 @@ def get_worldcup_today():
 
 def main():
     log_event("Starting Lithrop Ledger generation (Hybrid Architecture)...")
+    wait_for_network()
 
     market_table = get_market_data()
 

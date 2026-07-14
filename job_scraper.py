@@ -5,7 +5,7 @@ import requests
 from datetime import datetime
 from google import genai
 from google.genai import types
-from utils import notify, log_event, send_html_email
+from utils import notify, log_event, send_html_email, wait_for_network
 
 # Model IDs — single source of truth
 _MODEL_KEYWORDS = "gemini-2.5-flash"          # resume keyword extraction
@@ -517,6 +517,7 @@ def build_email_html(new_jobs):
 
 def main():
     log_event("Starting Weekly Job Scraper...")
+    wait_for_network()
     resume_content = load_resume()
     seen_urls = set(load_seen_jobs())
 

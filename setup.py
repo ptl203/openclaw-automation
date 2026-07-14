@@ -97,8 +97,10 @@ def main():
     generate_plist("com.openclaw.surf_compare_am", "surf_compare.py", 5, 0, extra_args="--am")
     # Surf Compare PM: 3:00 PM (15) daily
     generate_plist("com.openclaw.surf_compare_pm", "surf_compare.py", 15, 0, extra_args="--pm")
-    # Timecard Reminder: 6:00 PM (18) daily
+    # Timecard Reminder: 6:00 PM (18) weekdays (script skips Sat/Sun)
     generate_plist("com.openclaw.timecard_reminder", "timecard_reminder.py", 18, 0)
+    # Log Maintenance: Sun (0) 6:00 AM — rotate automation.log, truncate launchd logs
+    generate_plist("com.openclaw.log_maintenance", "log_maintenance.py", 6, 0, weekday=0)
 
     print("\n--- PMSET Wake Instructions ---")
     print("LaunchDaemons still won't fire while the Mac is fully asleep (only while")

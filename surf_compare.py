@@ -2,13 +2,16 @@ import os
 import json
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from google import genai
 from utils import (
-    notify, log_event,
-    filter_nearby_hours, fetch_stormglass,
-    param_value, closest_hour, score_conditions, GO_THRESHOLD,
+    notify, log_event, wait_for_network,
+    filter_nearby_hours, fetch_stormglass, fetch_tide_extremes,
+    score_conditions, tide_state, GO_THRESHOLD,
 )
+
+_PT = ZoneInfo("America/Los_Angeles")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BEACHES_FILE = os.path.join(SCRIPT_DIR, "beaches.json")
@@ -29,6 +32,64 @@ def star_str(n):
     return "★" * n + "☆" * (5 - n)
 
 
+def _fmt_hour_pt(iso_time):
+    """Render a UTC ISO time as a short Pacific hour label like '7 AM'."""
+    try:
+        t = datetime.fromisoformat(iso_time)
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t.astimezone(_PT).strftime("%-I %p")
+    except Exception:
+        return "now"
+
+
+def best_session_hour(session_hours, beach, tide_extremes):
+    """Score every hour in the session window and return the best (score, hour_iso)."""
+    best = None
+    for h in session_hours:
+        sc = score_conditions(
+            h, beach["facing_dir"],
+            swell_exposure=beach.get("swell_exposure"),
+            tide_extremes=tide_extremes,
+            tide_pref=beach.get("tide_pref"),
+        )
+        if best is None or sc["total"] > best["total"]:
+            best = sc
+    return best
+
+
+def tide_line(tide_extremes):
+    """One-line current-tide summary for the email header, or None."""
+    if not tide_extremes:
+        return None
+    state = tide_state(tide_extremes, datetime.now(timezone.utc))
+    if not state:
+        return None
+    next_time_pt = state["next_time"].astimezone(_PT).strftime("%-I:%M %p")
+    return (
+        f"Tide: {state['height_ft']} ft {state['direction']} — "
+        f"next {state['next_type']} {next_time_pt} ({state['next_height_ft']} ft)"
+    )
+
+
+def outlook_line(raw, beach, tide_extremes):
+    """Best-scoring hour over the next 24h, for a one-line outlook."""
+    try:
+        day = filter_nearby_hours(raw, back_hours=0, forward_hours=24)
+        best = best_session_hour(day["hours"], beach, tide_extremes)
+        if not best:
+            return None
+        when = _fmt_hour_pt(best["hour_time"])
+        return (
+            f"Next 24h best at {beach['name'].split(',')[0]}: ~{when} — "
+            f"{best['height_ft']} ft @ {best['primary_period_s']} s, "
+            f"{best['wind_label']} (score {best['total']})"
+        )
+    except Exception as e:
+        log_event(f"Outlook computation failed: {e}")
+        return None
+
+
 def build_beach_block(rank_label, beach_name, sc):
     """Format the full detail block for one beach from pre-computed score dict."""
     swell_lines = [
@@ -43,10 +104,20 @@ def build_beach_block(rank_label, beach_name, sc):
     wave_dir_str = f"{sc['wave_dir']}°" if sc["wave_dir"] is not None else "N/A"
     water_str    = f"{sc['water_temp_f']}°F" if sc["water_temp_f"] is not None else "N/A"
 
+    tide = sc.get("tide")
+    if tide:
+        tide_str = (
+            f"\nTide: {tide['height_ft']} ft {tide['direction']} "
+            f"(fit {sc['sub_scores']['tide']:.2f} for this spot)"
+        )
+    else:
+        tide_str = ""
+
     return (
         f"{rank_label} — {beach_name}\n"
-        f"Rating: {star_str(sc['stars'])}\n"
+        f"Rating: {star_str(sc['stars'])} (score {sc['total']}/100)\n"
         f"Size: {sc['size_label']} ({sc['height_ft']} ft)\n"
+        f"Best window: ~{_fmt_hour_pt(sc.get('hour_time'))}\n"
         f"\nWAVES\n"
         f"---------------------------------\n"
         f"Height: {sc['height_ft']} ft\n"
@@ -56,10 +127,12 @@ def build_beach_block(rank_label, beach_name, sc):
         f"---------------------------------\n"
         + "\n".join(swell_lines) +
         f"\nSea state: {sc['org_label']} ({sc['clean_pct']}% clean energy)\n"
+        f"Exposure fit: {sc['sub_scores']['swell_fit']:.2f} for this spot\n"
         f"\nWIND & WATER\n"
         f"---------------------------------\n"
         f"Wind: {sc['wind_kts']} kts from {sc['wind_dir']}° ({sc['wind_label']})\n"
         f"Water temp: {water_str}"
+        + tide_str
     )
 
 
@@ -72,11 +145,19 @@ def main():
         args.am = True
 
     log_event(f"Starting Surf Compare ({'AM' if args.am else 'PM'})...")
+    wait_for_network()
 
     with open(BEACHES_FILE) as f:
         beaches = json.load(f)
 
-    # Fetch all beaches in parallel
+    # One tide call covers the region — tide is effectively uniform across SD.
+    tide_extremes = None
+    try:
+        tide_extremes = fetch_tide_extremes(beaches[0]["lat"], beaches[0]["lng"])
+    except Exception as e:
+        log_event(f"Tide fetch failed — scoring tide as neutral: {e}")
+
+    # Fetch all beaches in parallel, keeping the raw multi-day response for the outlook
     results = {}
     errors = []
     with ThreadPoolExecutor(max_workers=len(beaches)) as executor:
@@ -85,24 +166,32 @@ def main():
             beach = futures[future]
             try:
                 raw = future.result()
-                results[beach["name"]] = (beach, filter_nearby_hours(raw))
+                results[beach["name"]] = (beach, raw)
             except Exception as e:
                 errors.append(f"{beach['name']}: {e}")
                 log_event(f"Surf Compare fetch failed for {beach['name']}: {e}")
 
     if not results:
-        notify("Surf Compare Error", "All beach data fetches failed:\n" + "\n".join(errors))
+        if any("402" in e for e in errors):
+            notify(
+                "Surf Compare: Stormglass quota exhausted",
+                "Stormglass returned 402 Payment Required — the daily free-tier "
+                "request quota (10/day) is used up, so there is no surf report "
+                "for this session. The quota resets at 00:00 UTC (~5 PM PT).",
+            )
+        else:
+            notify("Surf Compare Error", "All beach data fetches failed:\n" + "\n".join(errors))
         return
 
-    # Score each beach using the deterministic Python scorer
+    # Score every hour in the session window; each beach is ranked by its best hour
     now = datetime.now()
     scored = []
-    for name, (beach, nearby) in results.items():
-        hour = closest_hour(nearby)
-        if hour is None:
-            log_event(f"No data point near current time for {name} — skipping")
+    for name, (beach, raw) in results.items():
+        session = filter_nearby_hours(raw)
+        sc = best_session_hour(session["hours"], beach, tide_extremes)
+        if sc is None:
+            log_event(f"No data point in session window for {name} — skipping")
             continue
-        sc = score_conditions(hour, beach["facing_dir"])
         scored.append({"name": name, "beach": beach, "score": sc})
 
     if not scored:
@@ -125,28 +214,40 @@ def main():
         for i, r in enumerate(ranked)
     ]
 
-    # Ranked summary passed to Gemini for context
+    # Ranked summary passed to Gemini for context, including sub-scores so the
+    # verdict can name the real differentiators instead of inventing them.
     ranked_summary = "\n".join(
         f"  {rank_labels[i]} {r['name']}: {r['score']['stars']}★ "
         f"(score {r['score']['total']}/100) — "
         f"{r['score']['height_ft']} ft {r['score']['size_label']}, "
         f"{r['score']['wind_kts']} kts {r['score']['wind_label']}, "
         f"primary swell {r['score']['primary_period_s']} sec, "
-        f"sea state {r['score']['org_label']} ({r['score']['clean_pct']}% clean energy)"
+        f"sea state {r['score']['org_label']} ({r['score']['clean_pct']}% clean energy), "
+        f"best window ~{_fmt_hour_pt(r['score'].get('hour_time'))}, "
+        f"sub-scores {r['score']['sub_scores']}"
         for i, r in enumerate(ranked)
+    )
+
+    top_gap = (
+        ranked[0]["score"]["total"] - ranked[1]["score"]["total"]
+        if len(ranked) > 1 else 99
     )
 
     if go:
         verdict_instruction = (
             f"Explain in 2–3 sentences why {ranked[0]['name']} is the top pick today. "
-            f"Specifically name its strongest factors (wave size / period / wind quality) "
-            f"and briefly contrast what holds the other beaches back."
+            f"Only cite factors where its sub-scores actually differ from the other beaches "
+            f"(exposure fit, tide fit, wind, size, period). "
+            f"IMPORTANT: the top two scores differ by {top_gap} points. If that gap is 3 or "
+            f"less, say the beaches are effectively tied today and to pick by convenience — "
+            f"do NOT invent a differentiator."
         )
     else:
         verdict_instruction = (
             "Explain in 2–3 sentences why none of the beaches are worth surfing today. "
-            "Name the main problem (e.g. flat, blown-out onshore winds, short-period wind swell) "
-            "and advise staying home."
+            "Name the main problem (e.g. flat, blown-out onshore winds, short-period wind swell, "
+            "wrong tide) and advise staying home. If conditions are decent but short of a "
+            "notably good day, say so plainly — 'surfable but not special' beats overselling."
         )
 
     verdict_prompt = f"""You are writing one paragraph of a surf report email. Output ONLY the verdict text — no labels, no headers, no formatting, no markdown.
@@ -172,12 +273,21 @@ Ranked beaches (Python-computed scores — do not alter ratings or rankings):
         log_event(f"Surf Compare Gemini verdict failed: {e}")
         verdict_text = f"[Verdict unavailable: {e}]"
 
+    # Region-wide extras: current tide and next-24h outlook (computed from the
+    # top-ranked beach's raw data — no extra API calls)
+    tide_str_line = tide_line(tide_extremes)
+    top_raw = results[ranked[0]["name"]][1]
+    outlook = outlook_line(top_raw, ranked[0]["beach"], tide_extremes)
+    extras = "\n".join(s for s in (tide_str_line, outlook) if s)
+    extras_block = f"{extras}\n\n" if extras else ""
+
     # Assemble the final email — verdict on top, ranked beach blocks below
     sep = "\n═════════════════════════════════\n"
     email_body = (
         f"{header_emoji} SAN DIEGO SURF COMPARE — {session_label}\n"
         f"{now.strftime('%A, %B %d, %Y - %I:%M %p')}\n\n"
         f"{go_str}\n\n"
+        f"{extras_block}"
         f"VERDICT\n"
         f"---------------------------------\n"
         f"{verdict_text}\n\n"

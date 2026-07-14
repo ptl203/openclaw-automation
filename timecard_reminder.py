@@ -1,9 +1,15 @@
 from datetime import datetime
-from utils import notify, log_event
+from utils import notify, log_event, wait_for_network
 
 def main():
     log_event("Starting Timecard Reminder...")
 
+    # Timecards are a business-day chore — skip Saturday (5) and Sunday (6)
+    if datetime.now().weekday() >= 5:
+        log_event("Skipping Timecard Reminder: weekend.")
+        return
+
+    wait_for_network()
     subject = "ACTION REQUIRED: Enter/Sign your Booz Allen Timecard"
     now = datetime.now().strftime("%A, %B %d, %Y")
     body = (
