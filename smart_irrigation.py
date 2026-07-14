@@ -55,7 +55,7 @@ def main():
         return
 
     # Step 2: Evaluate
-    threshold = 25
+    threshold = 60
     avg_moisture = round(sum(readings.values()) / len(readings)) if readings else 0
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -65,8 +65,8 @@ def main():
 
     if avg_moisture >= threshold:
         report_lines.append(f"\nAverage moisture: {avg_moisture}%")
-        report_lines.append(f"Status: Skipped. Average moisture ({avg_moisture}%) is at or above 25% threshold.")
-        log_event(f"Irrigation Check finished: Skipped (average {avg_moisture}% is at or above 25%). Readings: {readings}")
+        report_lines.append(f"Status: Skipped. Average moisture ({avg_moisture}%) is at or above 60% threshold.")
+        log_event(f"Irrigation Check finished: Skipped (average {avg_moisture}% is at or above 60%). Readings: {readings}")
         notify("Smart Irrigation Status: No Watering Needed", "\n".join(report_lines))
         return
 
@@ -84,15 +84,15 @@ def main():
 
     payload = {
         "id": "18401f7e-b1c4-49b5-a1e4-4c3fdd24c8dc",
-        "duration": 900
+        "duration": 1500
     }
     try:
         rachio_resp = requests.put(rachio_url, headers=headers, json=payload)
         status_code = rachio_resp.status_code
         report_lines.append(f"\nAverage moisture: {avg_moisture}%")
-        report_lines.append(f"Status: Triggered. Average moisture ({avg_moisture}%) is below 25% threshold.")
+        report_lines.append(f"Status: Triggered. Average moisture ({avg_moisture}%) is below 60% threshold.")
         report_lines.append(f"Rachio API Status: HTTP {status_code}")
-        log_event(f"Irrigation Triggered: average {avg_moisture}% below 25%. HTTP {status_code}. Readings: {readings}")
+        log_event(f"Irrigation Triggered: average {avg_moisture}% below 60%. HTTP {status_code}. Readings: {readings}")
     except Exception as e:
         log_event(f"Rachio trigger failed: {e}. Readings: {readings}")
         report_lines.append(f"\nStatus: Failed to trigger Rachio: {e}")
