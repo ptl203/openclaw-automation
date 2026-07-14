@@ -346,10 +346,10 @@ _W_PERIOD = 0.20
 _W_ORG    = 0.15
 
 # Raw score (0–100) → stars (evaluated highest-threshold first)
-_STAR_MAP = [(82, 5), (68, 4), (50, 3), (35, 2), (0, 1)]
+_STAR_MAP = [(90, 5), (75, 4), (55, 3), (38, 2), (0, 1)]
 
-# Minimum raw score for a GO recommendation (≥ ★★★★)
-GO_THRESHOLD = 68
+# Minimum raw score for a GO recommendation (≥ ★★★)
+GO_THRESHOLD = 55
 
 
 def score_conditions(hour, facing_dir):
