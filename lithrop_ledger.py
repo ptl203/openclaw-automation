@@ -169,6 +169,64 @@ def _format_articles(articles):
     return "\n".join(blocks)
 
 
+# ── NYSE calendar ──────────────────────────────────────────────────────────
+# Whether the market was open on a date is decided from the calendar, never
+# inferred from whether Yahoo has published a daily bar — their chart API
+# often lags the prior session's settled bar in the early morning, which is
+# exactly when this script runs.
+
+def _easter(year):
+    """Gregorian Easter Sunday (anonymous/Meeus algorithm)."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = (h + l - 7 * m + 114) % 31 + 1
+    return datetime(year, month, day).date()
+
+
+def _observed(d):
+    """Shift a fixed-date holiday to its observed weekday (Sat→Fri, Sun→Mon)."""
+    if d.weekday() == 5:
+        return d - timedelta(days=1)
+    if d.weekday() == 6:
+        return d + timedelta(days=1)
+    return d
+
+
+def _nth_weekday(year, month, weekday, n):
+    first = datetime(year, month, 1).date()
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def _nyse_holidays(year):
+    memorial_day = datetime(year, 5, 31).date()
+    memorial_day -= timedelta(days=memorial_day.weekday())  # back to last Monday of May
+    return {
+        _observed(datetime(year, 1, 1).date()),        # New Year's Day
+        _nth_weekday(year, 1, 0, 3),                   # MLK Day
+        _nth_weekday(year, 2, 0, 3),                   # Washington's Birthday
+        _easter(year) - timedelta(days=2),             # Good Friday
+        memorial_day,
+        _observed(datetime(year, 6, 19).date()),       # Juneteenth
+        _observed(datetime(year, 7, 4).date()),        # Independence Day
+        _nth_weekday(year, 9, 0, 1),                   # Labor Day
+        _nth_weekday(year, 11, 3, 4),                  # Thanksgiving
+        _observed(datetime(year, 12, 25).date()),      # Christmas
+    }
+
+
+def market_was_open(d):
+    return d.weekday() < 5 and d not in _nyse_holidays(d.year)
+
+
 def fetch_fred_series_latest(series_id):
     """Return the two most recent (date, value) observations for a FRED series, skipping blank/missing values."""
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
@@ -245,31 +303,37 @@ def get_market_data():
                     lines.append(f"| {name} | N/A | N/A |")
                     break
 
-                if len(hist) < 2:
+                # Indices: use settled bars only (drop today's live partial bar).
+                # BTC trades continuously, so its latest bar is always current.
+                if ticker == "BTC-USD":
+                    settled = hist
+                else:
+                    settled = hist[hist.index.date < today_date]
+
+                if len(settled) < 2:
                     lines.append(f"| {name} | N/A | N/A |")
-                    break # Success but no data
+                    break # Success but not enough data
 
-                last_idx = -1
-                prev_idx = -2
+                current_close = settled['Close'].iloc[-1]
+                prev_close = settled['Close'].iloc[-2]
+                last_close_date = settled.index[-1].date()
+                change_pct = ((current_close - prev_close) / prev_close) * 100
 
-                if ticker != "BTC-USD" and hist.index[-1].date() == today_date:
-                    last_idx = -2
-                    prev_idx = -3
-
-                current_close = hist['Close'].iloc[last_idx]
-                last_close_date = hist.index[last_idx].date()
-                market_open_yesterday = ticker == "BTC-USD" or last_close_date >= yesterday
-
-                if not market_open_yesterday:
+                if ticker == "BTC-USD":
+                    lines.append(f"| {name} | ${current_close:,.2f} | {change_pct:+.2f}% |")
+                elif not market_was_open(yesterday):
+                    # Genuine weekend/holiday — show the last close without a change
                     lines.append(f"| {name} | {current_close:,.2f} | Market Closed |")
                 else:
-                    prev_close = hist['Close'].iloc[prev_idx]
-                    change_pct = ((current_close - prev_close) / prev_close) * 100
-
-                    if ticker == "BTC-USD":
-                        lines.append(f"| {name} | ${current_close:,.2f} | {change_pct:+.2f}% |")
+                    # Yesterday was a trading day. If Yahoo hasn't published its
+                    # settled bar yet (early-morning lag), still show the change
+                    # between the two most recent closes, dated so it's honest.
+                    if last_close_date < yesterday:
+                        date_note = f" (as of {last_close_date.strftime('%b %-d')})"
+                        log_event(f"{name}: settled bar for {yesterday} not yet published — showing {last_close_date} close")
                     else:
-                        lines.append(f"| {name} | {current_close:,.2f} | {change_pct:+.2f}% |")
+                        date_note = ""
+                    lines.append(f"| {name} | {current_close:,.2f}{date_note} | {change_pct:+.2f}% |")
 
                 break # Success
 
