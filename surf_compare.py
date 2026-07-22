@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -136,20 +137,8 @@ def build_beach_block(rank_label, beach_name, sc):
     )
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--am", action="store_true", help="Dawn patrol report")
-    parser.add_argument("--pm", action="store_true", help="Afternoon report")
-    args = parser.parse_args()
-    if not args.am and not args.pm:
-        args.am = True
-
-    log_event(f"Starting Surf Compare ({'AM' if args.am else 'PM'})...")
-    wait_for_network()
-
-    with open(BEACHES_FILE) as f:
-        beaches = json.load(f)
-
+def fetch_all(beaches):
+    """Network fetch only: tide extremes + per-beach Stormglass data. No scoring, no AI."""
     # One tide call covers the region — tide is effectively uniform across SD.
     tide_extremes = None
     try:
@@ -170,21 +159,16 @@ def main():
             except Exception as e:
                 errors.append(f"{beach['name']}: {e}")
                 log_event(f"Surf Compare fetch failed for {beach['name']}: {e}")
+    return results, errors, tide_extremes
 
-    if not results:
-        if any("402" in e for e in errors):
-            notify(
-                "Surf Compare: Stormglass quota exhausted",
-                "Stormglass returned 402 Payment Required — the daily free-tier "
-                "request quota (10/day) is used up, so there is no surf report "
-                "for this session. The quota resets at 00:00 UTC (~5 PM PT).",
-            )
-        else:
-            notify("Surf Compare Error", "All beach data fetches failed:\n" + "\n".join(errors))
-        return
+
+def score_and_summarize(results, tide_extremes, args, now=None):
+    """Pure scoring/ranking/formatting — no network, no AI. Python owns all numbers
+    and ratings; this is reused unchanged by --data-only and --render so the two
+    invocations always agree, without re-fetching from Stormglass."""
+    now = now or datetime.now()
 
     # Score every hour in the session window; each beach is ranked by its best hour
-    now = datetime.now()
     scored = []
     for name, (beach, raw) in results.items():
         session = filter_nearby_hours(raw)
@@ -195,8 +179,7 @@ def main():
         scored.append({"name": name, "beach": beach, "score": sc})
 
     if not scored:
-        notify("Surf Compare Error", "Could not score any beaches (no data near current time).")
-        return
+        return None
 
     # Rank best → worst by total score
     ranked = sorted(scored, key=lambda x: x["score"]["total"], reverse=True)
@@ -214,8 +197,8 @@ def main():
         for i, r in enumerate(ranked)
     ]
 
-    # Ranked summary passed to Gemini for context, including sub-scores so the
-    # verdict can name the real differentiators instead of inventing them.
+    # Ranked summary passed to the verdict writer for context, including sub-scores
+    # so it can name the real differentiators instead of inventing them.
     ranked_summary = "\n".join(
         f"  {rank_labels[i]} {r['name']}: {r['score']['stars']}★ "
         f"(score {r['score']['total']}/100) — "
@@ -250,16 +233,155 @@ def main():
             "notably good day, say so plainly — 'surfable but not special' beats overselling."
         )
 
+    # Region-wide extras: current tide and next-24h outlook (computed from the
+    # top-ranked beach's raw data — no extra API calls)
+    tide_str_line = tide_line(tide_extremes)
+    top_raw = results[ranked[0]["name"]][1]
+    outlook = outlook_line(top_raw, ranked[0]["beach"], tide_extremes)
+    extras = "\n".join(s for s in (tide_str_line, outlook) if s)
+    extras_block = f"{extras}\n\n" if extras else ""
+
+    return {
+        "now": now,
+        "go": go,
+        "go_str": go_str,
+        "context": context,
+        "header_emoji": header_emoji,
+        "session_label": session_label,
+        "blocks": blocks,
+        "ranked_summary": ranked_summary,
+        "verdict_instruction": verdict_instruction,
+        "extras_block": extras_block,
+    }
+
+
+def assemble_email(summary, verdict_text, args):
+    """Final assembly — verdict on top, ranked beach blocks below. Identical shape
+    whether the verdict came from Gemini (legacy) or a routine (current)."""
+    sep = "\n═════════════════════════════════\n"
+    email_body = (
+        f"{summary['header_emoji']} SAN DIEGO SURF COMPARE — {summary['session_label']}\n"
+        f"{summary['now'].strftime('%A, %B %d, %Y - %I:%M %p')}\n\n"
+        f"{summary['go_str']}\n\n"
+        f"{summary['extras_block']}"
+        f"VERDICT\n"
+        f"---------------------------------\n"
+        f"{verdict_text}\n\n"
+        + sep.join(summary["blocks"])
+    )
+    subject = f"Surf Compare: {'Morning' if args.am else 'Afternoon'}"
+    return subject, email_body
+
+
+def _cache_path(args):
+    """Where --data-only stashes its raw fetch so --render can reuse it without
+    hitting Stormglass again (the free tier is a 10/day quota)."""
+    tag = "am" if args.am else "pm"
+    return os.path.join(SCRIPT_DIR, f".surf_cache_{tag}.json")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--am", action="store_true", help="Dawn patrol report")
+    parser.add_argument("--pm", action="store_true", help="Afternoon report")
+    parser.add_argument(
+        "--data-only", action="store_true",
+        help="Fetch + score conditions, print verdict-writing context as JSON, and "
+             "cache the raw fetch to disk. Used by the Claude Code routine that "
+             "replaced the Gemini verdict step.",
+    )
+    parser.add_argument(
+        "--render", action="store_true",
+        help="Read a verdict paragraph from stdin, reuse the cached --data-only fetch "
+             "(no new Stormglass calls), and print the final {subject, body} as JSON "
+             "instead of sending email — the routine sends it via Gmail MCP.",
+    )
+    args = parser.parse_args()
+    if not args.am and not args.pm:
+        args.am = True
+
+    log_event(f"Starting Surf Compare ({'AM' if args.am else 'PM'})...")
+    wait_for_network()
+
+    with open(BEACHES_FILE) as f:
+        beaches = json.load(f)
+
+    cache_path = _cache_path(args)
+
+    if args.render:
+        with open(cache_path) as f:
+            cache = json.load(f)
+        results = {
+            name: (entry["beach"], entry["raw"])
+            for name, entry in cache["results"].items()
+        }
+        tide_extremes = cache["tide_extremes"]
+        now = datetime.fromisoformat(cache["now"])
+        summary = score_and_summarize(results, tide_extremes, args, now=now)
+        if summary is None:
+            print(json.dumps({"error": "Could not score any beaches from cached data."}))
+            return
+        verdict_text = sys.stdin.read().strip()
+        subject, body = assemble_email(summary, verdict_text, args)
+        print(json.dumps({"subject": subject, "body": body}))
+        log_event("Surf Compare --render finished.")
+        return
+
+    results, errors, tide_extremes = fetch_all(beaches)
+
+    if not results:
+        if any("402" in e for e in errors):
+            notify(
+                "Surf Compare: Stormglass quota exhausted",
+                "Stormglass returned 402 Payment Required — the daily free-tier "
+                "request quota (10/day) is used up, so there is no surf report "
+                "for this session. The quota resets at 00:00 UTC (~5 PM PT).",
+            )
+        else:
+            notify("Surf Compare Error", "All beach data fetches failed:\n" + "\n".join(errors))
+        return
+
+    now = datetime.now()
+
+    if args.data_only:
+        with open(cache_path, "w") as f:
+            json.dump({
+                "results": {
+                    name: {"beach": beach, "raw": raw}
+                    for name, (beach, raw) in results.items()
+                },
+                "tide_extremes": tide_extremes,
+                "now": now.isoformat(),
+            }, f)
+        summary = score_and_summarize(results, tide_extremes, args, now=now)
+        if summary is None:
+            print(json.dumps({"error": "Could not score any beaches (no data near current time)."}))
+            return
+        print(json.dumps({
+            "go": summary["go"],
+            "context": summary["context"],
+            "ranked_summary": summary["ranked_summary"],
+            "verdict_instruction": summary["verdict_instruction"],
+        }))
+        log_event("Surf Compare --data-only run finished.")
+        return
+
+    # Legacy path (kept until Gemini cleanup): score, get verdict from Gemini, send email
+    summary = score_and_summarize(results, tide_extremes, args, now=now)
+    if summary is None:
+        notify("Surf Compare Error", "Could not score any beaches (no data near current time).")
+        return
+
     verdict_prompt = f"""You are writing one paragraph of a surf report email. Output ONLY the verdict text — no labels, no headers, no formatting, no markdown.
 
-Session: {context}
+Session: {summary['context']}
 Current time: {now.strftime('%Y-%m-%d %H:%M:%S')}
-GO/NO-GO: {"GO" if go else "NO GO"}
+GO/NO-GO: {"GO" if summary['go'] else "NO GO"}
 
 Ranked beaches (Python-computed scores — do not alter ratings or rankings):
-{ranked_summary}
+{summary['ranked_summary']}
 
-{verdict_instruction}"""
+{summary['verdict_instruction']}"""
 
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     try:
@@ -273,28 +395,8 @@ Ranked beaches (Python-computed scores — do not alter ratings or rankings):
         log_event(f"Surf Compare Gemini verdict failed: {e}")
         verdict_text = f"[Verdict unavailable: {e}]"
 
-    # Region-wide extras: current tide and next-24h outlook (computed from the
-    # top-ranked beach's raw data — no extra API calls)
-    tide_str_line = tide_line(tide_extremes)
-    top_raw = results[ranked[0]["name"]][1]
-    outlook = outlook_line(top_raw, ranked[0]["beach"], tide_extremes)
-    extras = "\n".join(s for s in (tide_str_line, outlook) if s)
-    extras_block = f"{extras}\n\n" if extras else ""
-
-    # Assemble the final email — verdict on top, ranked beach blocks below
-    sep = "\n═════════════════════════════════\n"
-    email_body = (
-        f"{header_emoji} SAN DIEGO SURF COMPARE — {session_label}\n"
-        f"{now.strftime('%A, %B %d, %Y - %I:%M %p')}\n\n"
-        f"{go_str}\n\n"
-        f"{extras_block}"
-        f"VERDICT\n"
-        f"---------------------------------\n"
-        f"{verdict_text}\n\n"
-        + sep.join(blocks)
-    )
-
-    notify(f"Surf Compare: {'Morning' if args.am else 'Afternoon'}", email_body)
+    subject, email_body = assemble_email(summary, verdict_text, args)
+    notify(subject, email_body)
     log_event("Surf Compare finished successfully.")
 
 

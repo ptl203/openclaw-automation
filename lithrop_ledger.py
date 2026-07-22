@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import argparse
 import requests
 import feedparser
 import yfinance as yf
@@ -672,6 +674,15 @@ def get_worldcup_today():
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data-only", action="store_true",
+        help="Fetch all raw data (market/news/sports/story) and print it as JSON to "
+             "stdout instead of calling Gemini and sending email. Used by the Claude "
+             "Code routine that replaced the Gemini synthesis step.",
+    )
+    args = parser.parse_args()
+
     log_event("Starting Lithrop Ledger generation (Hybrid Architecture)...")
     wait_for_network()
 
@@ -695,8 +706,31 @@ def main():
     padres_news     = fetch_news_query("San Diego Padres")
     worldcup_today  = get_worldcup_today()
 
-    # 3. Construct prompt for Gemini
     weekend_tag = "  —  WEEKEND EDITION" if datetime.now().weekday() >= 5 else ""
+
+    if args.data_only:
+        payload = {
+            "date": datetime.now().strftime('%A, %B %d, %Y'),
+            "weekend_tag": weekend_tag,
+            "market_table": market_table,
+            "world_news": world_news,
+            "us_news": us_news,
+            "financial_news": financial_news,
+            "tech_news": tech_news,
+            "pll_standings": pll_standings,
+            "pll_next_event": pll_next_event,
+            "redwoods_news": redwoods_news,
+            "padres_summary": padres_summary,
+            "padres_standing": padres_standing,
+            "padres_news": padres_news,
+            "worldcup_today": worldcup_today,
+            "uplifting_news": uplifting_news,
+        }
+        print(json.dumps(payload))
+        log_event("Lithrop Ledger --data-only run finished.")
+        return
+
+    # 3. Construct prompt for Gemini
     prompt = f"""You are generating the daily Lithrop Ledger newsletter for Paul. Output ONLY a complete, valid HTML email document — no text before <!DOCTYPE html>, no text after </html>, no markdown, no code fences.
 
 DATE: {datetime.now().strftime('%A, %B %d, %Y')}{weekend_tag}

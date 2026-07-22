@@ -1,6 +1,8 @@
 import os
 import re
+import sys
 import json
+import argparse
 import requests
 from datetime import datetime
 from google import genai
@@ -45,6 +47,12 @@ GEMINI_COMPANIES = [
 
 
 def load_resume():
+    # Cloud routine runs have no local resume-summary.txt (it's gitignored/personal),
+    # so its content is supplied via the RESUME_SUMMARY env var instead. Local runs
+    # keep using the file.
+    resume_env = os.getenv("RESUME_SUMMARY")
+    if resume_env:
+        return resume_env
     base_dir = os.path.dirname(os.path.abspath(__file__))
     try:
         with open(os.path.join(base_dir, "resume-summary.txt"), "r") as f:
@@ -72,6 +80,20 @@ def save_seen_jobs(seen_list):
         json.dump(seen_list, f, indent=2)
 
 
+def _fallback_keywords():
+    return {
+        "titles": [
+            "systems engineer", "systems architect", "autonomy engineer",
+            "mission systems", "digital engineering",
+            "product manager", "technical product manager", "senior product manager",
+            "group product manager", "product owner",
+        ],
+        "skills": ["mbse", "sysml", "ros", "defense"],
+        "domains": ["uuv", "uas", "autonomy", "defense", "maritime", "undersea",
+                    "product management", "roadmap"],
+    }
+
+
 def extract_resume_keywords(resume_content):
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     prompt = f"""Extract job search keywords from this resume. Output ONLY a raw JSON object — no markdown, no explanation:
@@ -91,17 +113,7 @@ RESUME:
         return json.loads(clean)
     except Exception as e:
         log_event(f"Keyword extraction failed: {e} — using fallback keywords")
-        return {
-            "titles": [
-                "systems engineer", "systems architect", "autonomy engineer",
-                "mission systems", "digital engineering",
-                "product manager", "technical product manager", "senior product manager",
-                "group product manager", "product owner",
-            ],
-            "skills": ["mbse", "sysml", "ros", "defense"],
-            "domains": ["uuv", "uas", "autonomy", "defense", "maritime", "undersea",
-                        "product management", "roadmap"],
-        }
+        return _fallback_keywords()
 
 
 # Extra title synonyms / abbreviations applied on every run regardless of extracted keywords.
@@ -516,11 +528,99 @@ def build_email_html(new_jobs):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data-only", action="store_true",
+        help="Load the resume, run Tier-1 ATS fetch (Greenhouse/Lever/Ashby/Workday), "
+             "and print keywords + tier1 jobs + search context as JSON. Skips both "
+             "Gemini calls — the Claude Code routine that replaced them reads the "
+             "resume itself and runs its own web_search for Tier 2.",
+    )
+    parser.add_argument(
+        "--validate-urls", action="store_true",
+        help="Read a JSON list of candidate job postings from stdin, link-check each "
+             "with the existing _url_is_live logic, and print the verified subset as "
+             "JSON — same 'never email a dead posting' guarantee as before.",
+    )
+    parser.add_argument(
+        "--render", action="store_true",
+        help="Read the final combined job list (Tier 1 + verified Tier 2) from stdin "
+             "as JSON, dedup against jobs-seen.json, update jobs-seen.json, and print "
+             "the final {subject, body} as JSON instead of sending email — the routine "
+             "sends it via Gmail MCP.",
+    )
+    args = parser.parse_args()
+
+    if args.validate_urls:
+        candidates = json.load(sys.stdin)
+        verified = []
+        for job in candidates:
+            if _url_is_live(job["url"]):
+                verified.append(job)
+            else:
+                log_event(f"Dropped unverified job: {job.get('company')} — {job.get('title')}")
+        print(json.dumps(verified))
+        return
+
+    if args.render:
+        candidate_jobs = json.load(sys.stdin)
+        seen_urls = set(load_seen_jobs())
+        new_jobs = [j for j in candidate_jobs if j.get("url") and j["url"] not in seen_urls]
+        if not new_jobs:
+            print(json.dumps({"new_jobs": 0}))
+            log_event("Job Scraper --render: no new matches.")
+            return
+        seen_urls.update(j["url"] for j in new_jobs)
+        save_seen_jobs(list(seen_urls))
+        html = build_email_html(new_jobs)
+        print(json.dumps({
+            "subject": f"Job Matches — {len(new_jobs)} New Roles",
+            "body": html,
+            "new_jobs": len(new_jobs),
+        }))
+        log_event(
+            f"Job Scraper --render finished: {len(new_jobs)} new roles across "
+            f"{len(set(j['company'] for j in new_jobs))} companies."
+        )
+        return
+
     log_event("Starting Weekly Job Scraper...")
     wait_for_network()
     resume_content = load_resume()
     seen_urls = set(load_seen_jobs())
 
+    if args.data_only:
+        # Use the tested fallback keyword set directly, skipping Gemini call A —
+        # the routine reads resume_content itself and reasons about it directly.
+        keywords = _fallback_keywords()
+        log_event(f"Using fallback keywords (data-only mode): {len(keywords.get('titles', []))} titles")
+
+        tier1_jobs = []
+        for slug, name in GREENHOUSE_TARGETS:
+            tier1_jobs.extend(fetch_greenhouse_jobs(slug, name, keywords))
+        for slug, name in LEVER_TARGETS:
+            tier1_jobs.extend(fetch_lever_jobs(slug, name, keywords))
+        for slug, name in ASHBY_TARGETS:
+            tier1_jobs.extend(fetch_ashby_jobs(slug, name, keywords))
+        for tenant, dc, site, name in WORKDAY_TARGETS:
+            tier1_jobs.extend(fetch_workday_jobs(tenant, dc, site, name, keywords))
+
+        title_clause = " OR ".join(
+            f'"{t}"' for t in keywords.get("titles", [])[:10]
+        ) or '"Systems Engineer" OR "Product Manager"'
+
+        print(json.dumps({
+            "resume_content": resume_content,
+            "keywords": keywords,
+            "tier1_jobs": tier1_jobs,
+            "seen_urls": sorted(seen_urls)[-30:],
+            "search_companies": GEMINI_COMPANIES,
+            "title_search_clause": title_clause,
+        }))
+        log_event("Job Scraper --data-only run finished.")
+        return
+
+    # Legacy path (kept until Gemini cleanup): both Gemini calls, then send email directly
     # Stage 0: extract keywords from resume — drives all filtering
     keywords = extract_resume_keywords(resume_content)
     log_event(f"Keywords extracted: {len(keywords.get('titles', []))} titles, {len(keywords.get('domains', []))} domains")

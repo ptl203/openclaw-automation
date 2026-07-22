@@ -15,8 +15,14 @@ __pycache__/
 automation.log
 
 # Runtime state
-jobs-seen.json
+# jobs-seen.json is intentionally NOT ignored: the Job Scraper routine (cloud, no
+# local disk between runs) commits it after each run for cross-session dedup memory.
 irrigation-history.json
+
+# Surf Compare's --data-only -> --render cache (avoids re-hitting Stormglass's
+# 10/day free-tier quota between the two steps of one routine run)
+.surf_cache_am.json
+.surf_cache_pm.json
 
 # Generated previews
 ledger_preview.html
