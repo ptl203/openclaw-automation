@@ -3,7 +3,6 @@ google-genai
 python-dotenv
 playwright
 tenacity
-yfinance
 2captcha-python
 beautifulsoup4==4.12.3
 feedparser==6.0.11

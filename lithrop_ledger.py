@@ -4,7 +4,6 @@ import json
 import argparse
 import requests
 import feedparser
-import yfinance as yf
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -253,6 +252,30 @@ def fetch_fred_series_latest(series_id):
     return observations[-1], observations[-2]
 
 
+def fetch_yahoo_daily_bars(symbol):
+    """Return [(date, close), ...] daily bars, oldest first, via Yahoo's chart JSON.
+
+    Fetched with plain requests instead of yfinance/curl_cffi: curl_cffi's Chrome-TLS
+    impersonation (used to clear Yahoo's bot check) is broken by TLS-terminating egress
+    proxies like the Claude Code routine sandbox, which reset the connection. Plain
+    requests to the same endpoint works fine. Dates use meta.gmtoffset to get the
+    exchange-local trading day, matching the localized index yfinance used to provide.
+    """
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=5d&interval=1d"
+    resp = requests.get(url, timeout=15, headers=_BROWSER_HEADERS)
+    resp.raise_for_status()
+    result = resp.json()["chart"]["result"][0]
+    offset = result.get("meta", {}).get("gmtoffset", 0) or 0
+    timestamps = result.get("timestamp", []) or []
+    closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", []) or []
+    bars = []
+    for ts, close in zip(timestamps, closes):
+        if close is None:      # skip the live partial bar's null / mid-series gaps
+            continue
+        bars.append((datetime.utcfromtimestamp(ts + offset).date(), float(close)))
+    return bars
+
+
 def get_10y_treasury_row():
     """Fetch the 10Y Treasury yield (FRED series DGS10) with retries, returning a formatted table row."""
     retries = 3
@@ -295,30 +318,29 @@ def get_market_data():
         retries = 3
         for attempt in range(retries):
             try:
-                stock = yf.Ticker(ticker)
-                hist = stock.history(period="5d")
+                bars = fetch_yahoo_daily_bars(ticker)
 
-                # yfinance returns None/empty when rate-limited — retrying immediately
+                # Empty bars means Yahoo returned no usable data — retrying immediately
                 # just repeats the failure, so surface it clearly and move on.
-                if hist is None or hist.empty:
-                    log_event(f"{name}: yfinance returned no history (likely rate-limited)")
+                if not bars:
+                    log_event(f"{name}: Yahoo chart returned no bars")
                     lines.append(f"| {name} | N/A | N/A |")
                     break
 
                 # Indices: use settled bars only (drop today's live partial bar).
                 # BTC trades continuously, so its latest bar is always current.
                 if ticker == "BTC-USD":
-                    settled = hist
+                    settled = bars
                 else:
-                    settled = hist[hist.index.date < today_date]
+                    settled = [b for b in bars if b[0] < today_date]
 
                 if len(settled) < 2:
                     lines.append(f"| {name} | N/A | N/A |")
                     break # Success but not enough data
 
-                current_close = settled['Close'].iloc[-1]
-                prev_close = settled['Close'].iloc[-2]
-                last_close_date = settled.index[-1].date()
+                current_close = settled[-1][1]
+                prev_close = settled[-2][1]
+                last_close_date = settled[-1][0]
                 change_pct = ((current_close - prev_close) / prev_close) * 100
 
                 if ticker == "BTC-USD":
