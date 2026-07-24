@@ -2,10 +2,8 @@ import os
 import re
 import time
 import socket
-import smtplib
 import requests
 from datetime import datetime
-from email.message import EmailMessage
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -111,22 +109,28 @@ def fetch_tide_extremes(lat, lng, **kwargs):
     return _stormglass_get(url, **kwargs)
 
 _EMAIL_RETRY_DELAY = 30  # seconds before the single retry
+_RESEND_API_URL = "https://api.resend.com/emails"
 
 
-def _deliver_email(msg, subject):
-    """Send a prepared message via SMTP with one retry; failures hit automation.log."""
-    server = os.getenv("SMTP_SERVER")
-    port = os.getenv("SMTP_PORT", 587)
-    user = os.getenv("EMAIL_ADDRESS")
-    pwd = os.getenv("EMAIL_PASSWORD")
+def _deliver_email(payload, subject):
+    """Send a prepared Resend payload with one retry; failures hit automation.log.
+
+    Sends over HTTPS via Resend's API instead of raw SMTP sockets — the Claude
+    Code routine sandbox's egress proxy only speaks HTTP(S), so smtplib.SMTP()
+    fails there with a hard socket-family error on every attempt regardless of
+    IPv4/IPv6, credentials, or retries.
+    """
+    api_key = os.getenv("RESEND_API_KEY")
 
     for attempt in (1, 2):
         try:
-            s = smtplib.SMTP(server, int(port))
-            s.starttls()
-            s.login(user, pwd)
-            s.send_message(msg)
-            s.quit()
+            resp = requests.post(
+                _RESEND_API_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json=payload,
+                timeout=20,
+            )
+            resp.raise_for_status()
             print(f"Sent Email: {subject}")
             return True
         except Exception as e:
@@ -138,8 +142,7 @@ def _deliver_email(msg, subject):
 
 
 def _email_config_ok(subject):
-    if all([os.getenv("SMTP_SERVER"), os.getenv("EMAIL_ADDRESS"),
-            os.getenv("EMAIL_PASSWORD"), os.getenv("TO_EMAIL")]):
+    if all([os.getenv("RESEND_API_KEY"), os.getenv("RESEND_FROM"), os.getenv("TO_EMAIL")]):
         return True
     log_event(f"Email configuration missing for: {subject}")
     print(f"Email configuration missing for: {subject}")
@@ -149,24 +152,26 @@ def _email_config_ok(subject):
 def send_email(subject, message):
     if not _email_config_ok(subject):
         return
-    msg = EmailMessage()
-    msg.set_content(message)
-    msg['Subject'] = f"[LobsterClaw] {subject}"
-    msg['From'] = os.getenv("EMAIL_ADDRESS")
-    msg['To'] = os.getenv("TO_EMAIL")
-    _deliver_email(msg, subject)
+    payload = {
+        "from": os.getenv("RESEND_FROM"),
+        "to": [os.getenv("TO_EMAIL")],
+        "subject": f"[LobsterClaw] {subject}",
+        "text": message,
+    }
+    _deliver_email(payload, subject)
 
 
 def send_html_email(subject, html_body):
     if not _email_config_ok(subject):
         return
-    msg = EmailMessage()
-    msg['Subject'] = f"[LobsterClaw] {subject}"
-    msg['From'] = os.getenv("EMAIL_ADDRESS")
-    msg['To'] = os.getenv("TO_EMAIL")
-    msg.set_content("This email requires an HTML-capable email client.")
-    msg.add_alternative(html_body, subtype='html')
-    _deliver_email(msg, subject)
+    payload = {
+        "from": os.getenv("RESEND_FROM"),
+        "to": [os.getenv("TO_EMAIL")],
+        "subject": f"[LobsterClaw] {subject}",
+        "html": html_body,
+        "text": "This email requires an HTML-capable email client.",
+    }
+    _deliver_email(payload, subject)
 
 # Query params / header values that must never reach automation.log. Error
 # messages from requests embed full URLs, which previously leaked API keys.
