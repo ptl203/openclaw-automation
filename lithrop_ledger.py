@@ -473,76 +473,93 @@ def fetch_rss_feed(url, limit=1):
 # ── Sports fetchers ────────────────────────────────────────────────────────────
 
 def get_pll_standings():
-    """Return a formatted standings table for the Premier Lacrosse League."""
-    try:
-        resp = requests.get(
-            "https://site.api.espn.com/apis/v2/sports/lacrosse/pll/standings",
-            timeout=10
-        ).json()
-        entries = resp.get("standings", {}).get("entries", [])
-        if not entries:
-            return "(PLL standings unavailable)"
+    """Return a formatted standings table for the Premier Lacrosse League.
 
-        # Sort by wins desc, then losses asc
-        def sort_key(e):
-            stats = {s["name"]: s["value"] for s in e.get("stats", [])}
-            return (-stats.get("wins", 0), stats.get("losses", 99))
+    Retries on transient fetch errors — a single ESPN blip used to fall straight to the
+    "(PLL standings unavailable)" placeholder, which the newsletter prompt then had no
+    table rows to render, leaving the Sports sub-block looking empty instead of showing
+    an explanatory message.
+    """
+    retries = 3
+    for attempt in range(retries):
+        try:
+            resp = requests.get(
+                "https://site.api.espn.com/apis/v2/sports/lacrosse/pll/standings",
+                timeout=10
+            ).json()
+            entries = resp.get("standings", {}).get("entries", [])
+            if not entries:
+                return "(PLL standings unavailable)"
 
-        entries_sorted = sorted(entries, key=sort_key)
+            # Sort by wins desc, then losses asc
+            def sort_key(e):
+                stats = {s["name"]: s["value"] for s in e.get("stats", [])}
+                return (-stats.get("wins", 0), stats.get("losses", 99))
 
-        lines = ["PLL STANDINGS", "| # | Team | W | L |", "|---|---|---|---|"]
-        for rank, e in enumerate(entries_sorted, 1):
-            stats = {s["name"]: s["displayValue"] for s in e.get("stats", [])}
-            name = e.get("team", {}).get("displayName", "Unknown")
-            w = stats.get("wins", "?")
-            l = stats.get("losses", "?")
-            lines.append(f"| {rank} | {name} | {w} | {l} |")
-        return "\n".join(lines)
-    except Exception as e:
-        log_event(f"Error fetching PLL standings: {e}")
-        return "(PLL standings unavailable)"
+            entries_sorted = sorted(entries, key=sort_key)
+
+            lines = ["PLL STANDINGS", "| # | Team | W | L |", "|---|---|---|---|"]
+            for rank, e in enumerate(entries_sorted, 1):
+                stats = {s["name"]: s["displayValue"] for s in e.get("stats", [])}
+                name = e.get("team", {}).get("displayName", "Unknown")
+                w = stats.get("wins", "?")
+                l = stats.get("losses", "?")
+                lines.append(f"| {rank} | {name} | {w} | {l} |")
+            return "\n".join(lines)
+        except Exception as e:
+            log_event(f"Error fetching PLL standings (attempt {attempt+1}/{retries}): {e}")
+            if attempt == retries - 1:
+                return "(PLL standings unavailable)"
+            time.sleep(2)
 
 
 def get_pll_next_event():
-    """Return the matchups and times for the next PLL event weekend."""
-    try:
-        resp = requests.get(
-            "https://site.api.espn.com/apis/site/v2/sports/lacrosse/pll/scoreboard",
-            timeout=10
-        ).json()
-        events = resp.get("events", [])
-        if not events:
-            return "(No upcoming PLL games found)"
+    """Return the matchups and times for the next PLL event weekend.
 
-        # Find the earliest upcoming event date, then list all games on that date cluster
-        future_events = []
-        now_utc = datetime.now(timezone.utc)
-        for e in events:
-            raw_date = e.get("date", "")
-            try:
-                dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-                if dt > now_utc:
-                    future_events.append((dt, e))
-            except Exception:
-                pass
+    Retries on transient fetch errors — see get_pll_standings() for why this matters.
+    """
+    retries = 3
+    for attempt in range(retries):
+        try:
+            resp = requests.get(
+                "https://site.api.espn.com/apis/site/v2/sports/lacrosse/pll/scoreboard",
+                timeout=10
+            ).json()
+            events = resp.get("events", [])
+            if not events:
+                return "(No upcoming PLL games found)"
 
-        if not future_events:
-            return "(No upcoming PLL games found)"
+            # Find the earliest upcoming event date, then list all games on that date cluster
+            future_events = []
+            now_utc = datetime.now(timezone.utc)
+            for e in events:
+                raw_date = e.get("date", "")
+                try:
+                    dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+                    if dt > now_utc:
+                        future_events.append((dt, e))
+                except Exception:
+                    pass
 
-        # Group by the date of the nearest event weekend (within 3 days of the first game)
-        future_events.sort(key=lambda x: x[0])
-        first_dt = future_events[0][0]
-        weekend_events = [(dt, e) for dt, e in future_events if (dt - first_dt).days <= 3]
+            if not future_events:
+                return "(No upcoming PLL games found)"
 
-        lines = [f"PLL NEXT EVENT — {first_dt.astimezone(_PT).strftime('%B %-d, %Y')}"]
-        for dt, e in weekend_events:
-            name = e.get("name", "TBD")
-            time_str = _fmt_pt(e.get("date", ""))
-            lines.append(f"  {name} — {time_str}")
-        return "\n".join(lines)
-    except Exception as e:
-        log_event(f"Error fetching PLL schedule: {e}")
-        return "(PLL schedule unavailable)"
+            # Group by the date of the nearest event weekend (within 3 days of the first game)
+            future_events.sort(key=lambda x: x[0])
+            first_dt = future_events[0][0]
+            weekend_events = [(dt, e) for dt, e in future_events if (dt - first_dt).days <= 3]
+
+            lines = [f"PLL NEXT EVENT — {first_dt.astimezone(_PT).strftime('%B %-d, %Y')}"]
+            for dt, e in weekend_events:
+                name = e.get("name", "TBD")
+                time_str = _fmt_pt(e.get("date", ""))
+                lines.append(f"  {name} — {time_str}")
+            return "\n".join(lines)
+        except Exception as e:
+            log_event(f"Error fetching PLL schedule (attempt {attempt+1}/{retries}): {e}")
+            if attempt == retries - 1:
+                return "(PLL schedule unavailable)"
+            time.sleep(2)
 
 
 def get_padres_summary():
@@ -658,43 +675,6 @@ def get_padres_standings():
         return "(Padres standings unavailable)"
 
 
-def get_worldcup_today():
-    """Return today's FIFA World Cup match schedule in Pacific time."""
-    try:
-        today_str = datetime.now().strftime("%Y%m%d")
-        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates={today_str}"
-        resp = requests.get(url, timeout=10).json()
-        events = resp.get("events", [])
-
-        if not events:
-            return "(No FIFA World Cup matches today)"
-
-        lines = [f"FIFA WORLD CUP — Today's Matches ({datetime.now().strftime('%B %-d, %Y')})"]
-        for e in events:
-            comps = e.get("competitions", [{}])[0]
-            competitors = comps.get("competitors", [])
-            team_names = [c.get("team", {}).get("displayName", "?") for c in competitors]
-            match_time = _fmt_pt(e.get("date", ""))
-            status_desc = comps.get("status", {}).get("type", {}).get("description", "")
-
-            if status_desc in ("Final", "Full Time"):
-                scores = {c.get("homeAway"): c.get("score", "?") for c in competitors}
-                home_score = scores.get("home", "?")
-                away_score = scores.get("away", "?")
-                lines.append(f"  {' vs '.join(team_names)} — FINAL {away_score}-{home_score}")
-            elif status_desc in ("In Progress", "Halftime"):
-                scores = {c.get("homeAway"): c.get("score", "?") for c in competitors}
-                home_score = scores.get("home", "?")
-                away_score = scores.get("away", "?")
-                lines.append(f"  {' vs '.join(team_names)} — LIVE {away_score}-{home_score} ({status_desc})")
-            else:
-                lines.append(f"  {' vs '.join(team_names)} — {match_time}")
-        return "\n".join(lines)
-    except Exception as e:
-        log_event(f"Error fetching World Cup schedule: {e}")
-        return "(FIFA World Cup schedule unavailable)"
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -726,7 +706,6 @@ def main():
     padres_summary  = get_padres_summary()
     padres_standing = get_padres_standings()
     padres_news     = fetch_news_query("San Diego Padres")
-    worldcup_today  = get_worldcup_today()
 
     weekend_tag = "  —  WEEKEND EDITION" if datetime.now().weekday() >= 5 else ""
 
@@ -745,7 +724,6 @@ def main():
             "padres_summary": padres_summary,
             "padres_standing": padres_standing,
             "padres_news": padres_news,
-            "worldcup_today": worldcup_today,
             "uplifting_news": uplifting_news,
         }
         print(json.dumps(payload))
@@ -794,9 +772,6 @@ RAW DATA — use ONLY this. Do NOT add outside information.
 [PADRES NEWS]
 {padres_news}
 
-[FIFA WORLD CUP — TODAY'S SCHEDULE]
-{worldcup_today}
-
 --- UPLIFTING STORY ---
 {uplifting_news}
 
@@ -820,7 +795,7 @@ FINANCIAL NEWS: Major market moves, central bank policy decisions, significant e
 
 TECH NEWS: Significant product launches or major releases from notable companies, large acquisitions or mergers, major regulatory actions against tech companies, breakthrough research from credible institutions. Exclude: puzzle/game hints or answers (Wordle, Connections, Strands, crosswords), app-of-the-day filler, deals/shopping roundups, and "what to watch" listicles — these are never significant.
 
-SPORTS: Render PLL standings and schedule VERBATIM from the raw data — do not alter scores, records, or times. Summarize the California Redwoods and Padres news pools into 1–2 items each (only include items of genuine significance — roster moves, injuries, notable performances, contract news; skip fluff). Render the Padres game data (last game / next game / standing) VERBATIM from the raw data. Render the World Cup schedule VERBATIM from the raw data.
+SPORTS: Render PLL standings and schedule VERBATIM from the raw data — do not alter scores, records, or times. If the PLL standings or schedule data is one of its "(...unavailable)" / "(No upcoming PLL games found)" placeholder messages rather than real data, display that message as a single line of text instead of an empty table — never render an empty table. Summarize the California Redwoods and Padres news pools into 1–2 items each (only include items of genuine significance — roster moves, injuries, notable performances, contract news; skip fluff). Render the Padres game data (last game / next game / standing) VERBATIM from the raw data.
 
 STORY DEPTH: Write 4-6 substantive sentences per story, drawing on the "Full text (excerpt)" when provided — include specifics: names, numbers, quotes, and context. For stories with only a short description, write what the source supports and no more; NEVER invent details not present in the raw data. For major, high-impact stories (wars, landmark legislation, large market moves, major acquisitions) write comprehensive coverage with full context — no upper sentence limit. Do not pad minor stories with filler.
 
@@ -876,23 +851,21 @@ SECTIONS IN ORDER:
 
 SPORTS SECTION SPEC (section 7, after Technology):
 Use <h2> "Sports" as the section header.
-Divide into three labeled sub-blocks, each with a sub-header <h3> (font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#555; margin:16px 0 8px):
+Divide into two labeled sub-blocks, each with a sub-header <h3> (font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#555; margin:16px 0 8px):
 
   SUB-BLOCK A — "Premier Lacrosse League"
     - PLL Standings table: same styling as the Markets table above (dark header row, alternating rows).
       Header columns: # | Team | W | L
-      Populate with data from [PLL STANDINGS] verbatim.
-    - Next Event: after the table, a small <p style="font-size:13px;color:#555;margin:8px 0 14px;"> listing the games from [PLL NEXT EVENT], one game per line using <br>.
+      Populate with data from [PLL STANDINGS] verbatim. If [PLL STANDINGS] is its "(PLL standings unavailable)"
+      placeholder message rather than real data, display that message as a single <p> in color:#888 instead
+      of an empty table.
+    - Next Event: after the table, a small <p style="font-size:13px;color:#555;margin:8px 0 14px;"> listing the games from [PLL NEXT EVENT], one game per line using <br>. If [PLL NEXT EVENT] is its "(No upcoming PLL games found)" or "(PLL schedule unavailable)" placeholder message, display that message instead of an empty list.
     - California Redwoods news: 1–2 items in STORY FORMAT.
 
   SUB-BLOCK B — "San Diego Padres"
     - Game recap block: a <div style="background:#f7f7f7;border-left:3px solid #1a1a1a;padding:10px 14px;margin-bottom:14px;font-size:14px;line-height:1.8;color:#333;">
         showing Last game, Next game, and Standing from [PADRES GAME DATA] — three lines, labels in <strong>.
     - Padres news: 1–2 items in STORY FORMAT.
-
-  SUB-BLOCK C — "FIFA World Cup"
-    - <p style="font-size:14px;color:#333;line-height:1.8;margin:0 0 14px;"> listing each match from [FIFA WORLD CUP — TODAY'S SCHEDULE], one per line using <br>.
-      If no matches today, display the "(No FIFA World Cup matches today)" message as a single <p> in color:#888.
 
 Wrap the entire Sports section in: <div style="margin-bottom:28px;">
 
