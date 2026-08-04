@@ -1,8 +1,8 @@
 import os
 import json
 import requests
-from datetime import datetime
-from utils import notify, log_event, wait_for_network
+from datetime import date
+from utils import notify, log_event, wait_for_network, now_local
 
 THRESHOLD = 60          # water when average soil moisture is below this
 WATER_SECONDS = 1500    # 25 minutes
@@ -17,6 +17,15 @@ HISTORY_MAX_ENTRIES = 90
 # points of average-moisture improvement — the sensors aren't seeing the water.
 STALL_WATERINGS = 4
 STALL_MIN_RISE = 3
+
+# Warn when the newest history entry is older than this many days. The max
+# legitimate gap under the Mon/Thu skip schedule is 2 days (Sun->Tue, Wed->Fri);
+# this tolerates one missed run before flagging. Exists to catch a broken
+# git push (this job runs as a cloud routine and commits its own history file
+# back to the repo) — the exact silent-failure mode jobs-seen.json has had
+# since it was migrated: if the push stops working, every run since starts
+# from a stale seed instead of announcing the problem.
+HISTORY_STALE_DAYS = 4
 
 
 def load_history():
@@ -63,6 +72,32 @@ def sensor_response_warning(history):
     )
 
 
+def history_staleness_warning(history, today):
+    """Return a warning string if irrigation-history.json hasn't been updated recently.
+
+    Called on the loaded history BEFORE today's entry is appended. A stale
+    newest-entry date means the last N runs' history writes never made it back
+    into the file the next run reads — most likely a broken `git push` from
+    the cloud routine. Surfacing this in the email itself means a broken push
+    announces itself within days instead of quietly rotting the stall check
+    and weekly trend below.
+    """
+    entries = [h for h in history if h.get("date")]
+    if not entries:
+        return None
+    last = date.fromisoformat(entries[-1]["date"])
+    gap = (today - last).days
+    if gap <= HISTORY_STALE_DAYS:
+        return None
+    return (
+        f"⚠️ HISTORY STALE: newest recorded entry is {last} ({gap} days ago). "
+        f"irrigation-history.json isn't being updated between runs — the "
+        f"sensor-stall check above and any weekly trend below are computed "
+        f"from stale data. If this job runs as a cloud routine, its git push "
+        f"of irrigation-history.json is likely failing; check that first."
+    )
+
+
 def weekly_trend_lines(history):
     """A 7-day readings/action table, appended to Sunday's email."""
     entries = [h for h in history if "avg" in h][-7:]
@@ -79,8 +114,8 @@ def main():
     wait_for_network()
 
     # Skip Monday (0) and Thursday (3)
-    if datetime.now().weekday() in [0, 3]:
-        log_event(f"Skipping Irrigation Check: {datetime.now().strftime('%A')} is a non-watering day.")
+    if now_local().weekday() in [0, 3]:
+        log_event(f"Skipping Irrigation Check: {now_local().strftime('%A')} is a non-watering day.")
         return
 
     ecowitt_url = "https://api.ecowitt.net/api/v3/device/real_time"
@@ -129,8 +164,10 @@ def main():
     avg_moisture = round(sum(readings.values()) / len(readings)) if readings else 0
     history = load_history()
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    today = datetime.now().strftime("%Y-%m-%d")
+    now_dt = now_local()
+    now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    today = now_dt.strftime("%Y-%m-%d")
+    staleness_warning = history_staleness_warning(history, now_dt.date())
     report_lines = [f"Irrigation Check - {now}"]
     for ch, val in readings.items():
         report_lines.append(f"{ch}: {val}%")
@@ -176,6 +213,10 @@ def main():
             report_lines.append(f"Status: FAILED to trigger Rachio: {e}")
             subject = "Irrigation Error: Rachio trigger failed"
 
+    # Drop any existing entry for today before appending, so a manual re-run
+    # (or an overlapping launchd + cloud-routine run) can't double-count a
+    # date in the stall check or the 7-day trend table.
+    history = [h for h in history if h.get("date") != entry["date"]]
     history.append(entry)
     save_history(history)
 
@@ -184,12 +225,24 @@ def main():
         report_lines.insert(1, "")
         report_lines.insert(1, warning)
 
+    if staleness_warning:
+        report_lines.insert(1, "")
+        report_lines.insert(1, staleness_warning)
+
     # Sunday: append the weekly trend table
-    if datetime.now().weekday() == 6:
+    if now_dt.weekday() == 6:
         report_lines.extend(weekly_trend_lines(history))
 
-    notify(subject, "\n".join(report_lines))
-    log_event("Irrigation Check finished.")
+    # Machine-readable footer: durably archives today's data point in the
+    # inbox regardless of whether irrigation-history.json's git push
+    # succeeds. If the push breaks for a while, the file is reconstructable
+    # by grepping these lines out of the sent emails.
+    report_lines += ["", "---", "HISTORY ENTRY: " + json.dumps(entry, separators=(",", ":"))]
+
+    if notify(subject, "\n".join(report_lines)):
+        log_event("Irrigation Check finished.")
+    else:
+        log_event("Irrigation Check finished: email FAILED (see prior log line).")
 
 
 if __name__ == "__main__":

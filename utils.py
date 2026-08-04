@@ -3,10 +3,31 @@ import re
 import time
 import socket
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
+
+try:
+    LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+except Exception:
+    # Slim sandbox images (e.g. the Claude Code routine environment) can lack
+    # the tzdata database. Fall back to a fixed PDT offset — safe ONLY because
+    # every caller of now_local() derives just a weekday/calendar-day and runs
+    # nowhere near midnight (5 AM / 6 PM +/- 1h never crosses a day boundary).
+    # Do not reuse this fallback for anything scheduled near midnight.
+    LOCAL_TZ = timezone(timedelta(hours=-7))
+
+
+def now_local():
+    """Current time in America/Los_Angeles (or the PDT fallback above).
+
+    Jobs run as Claude Code routines in a UTC sandbox; using this instead of
+    datetime.now() keeps weekday/date logic correct regardless of where the
+    process executes.
+    """
+    return datetime.now(LOCAL_TZ)
 
 
 def wait_for_network(max_wait=120, host="one.one.one.one", interval=5):
@@ -151,19 +172,19 @@ def _email_config_ok(subject):
 
 def send_email(subject, message):
     if not _email_config_ok(subject):
-        return
+        return False
     payload = {
         "from": os.getenv("RESEND_FROM"),
         "to": [os.getenv("TO_EMAIL")],
         "subject": f"[LobsterClaw] {subject}",
         "text": message,
     }
-    _deliver_email(payload, subject)
+    return _deliver_email(payload, subject)
 
 
 def send_html_email(subject, html_body):
     if not _email_config_ok(subject):
-        return
+        return False
     payload = {
         "from": os.getenv("RESEND_FROM"),
         "to": [os.getenv("TO_EMAIL")],
@@ -171,7 +192,7 @@ def send_html_email(subject, html_body):
         "html": html_body,
         "text": "This email requires an HTML-capable email client.",
     }
-    _deliver_email(payload, subject)
+    return _deliver_email(payload, subject)
 
 # Query params / header values that must never reach automation.log. Error
 # messages from requests embed full URLs, which previously leaked API keys.
@@ -187,7 +208,7 @@ def redact_secrets(text):
 def log_event(message):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     log_path = os.path.join(base_dir, "automation.log")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = now_local().strftime("%Y-%m-%d %H:%M:%S")
     with open(log_path, "a") as f:
         f.write(f"[{timestamp}] {redact_secrets(message)}\n")
 
@@ -195,7 +216,7 @@ def notify(subject, message):
     log_event(f"NOTIFY [{subject}]: {message[:100]}...")
     print(f"--- {subject} ---")
     print(message)
-    send_email(subject, message)
+    return send_email(subject, message)
 
 
 def compass_label(deg):

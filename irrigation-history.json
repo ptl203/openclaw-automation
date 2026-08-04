@@ -1,0 +1,178 @@
+[
+  {
+    "date": "2026-07-14",
+    "readings": {
+      "soil_ch1": 37,
+      "soil_ch2": 43,
+      "soil_ch3": 43,
+      "soil_ch4": 34
+    },
+    "avg": 39,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-15",
+    "readings": {
+      "soil_ch1": 41,
+      "soil_ch2": 48,
+      "soil_ch3": 48,
+      "soil_ch4": 37
+    },
+    "avg": 44,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-17",
+    "readings": {
+      "soil_ch1": 36,
+      "soil_ch2": 45,
+      "soil_ch3": 49,
+      "soil_ch4": 34
+    },
+    "avg": 41,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-18",
+    "readings": {
+      "soil_ch1": 37,
+      "soil_ch2": 45,
+      "soil_ch3": 47,
+      "soil_ch4": 34
+    },
+    "avg": 41,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-19",
+    "readings": {
+      "soil_ch1": 36,
+      "soil_ch2": 45,
+      "soil_ch3": 47,
+      "soil_ch4": 24
+    },
+    "avg": 38,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-21",
+    "readings": {
+      "soil_ch1": 34,
+      "soil_ch2": 44,
+      "soil_ch3": 50,
+      "soil_ch4": 25
+    },
+    "avg": 38,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-22",
+    "readings": {
+      "soil_ch1": 33,
+      "soil_ch2": 43,
+      "soil_ch3": 49,
+      "soil_ch4": 25
+    },
+    "avg": 38,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-24",
+    "readings": {
+      "soil_ch1": 34,
+      "soil_ch2": 40,
+      "soil_ch3": 49,
+      "soil_ch4": 27
+    },
+    "avg": 38,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-25",
+    "readings": {
+      "soil_ch1": 35,
+      "soil_ch2": 40,
+      "soil_ch3": 49,
+      "soil_ch4": 28
+    },
+    "avg": 38,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-26",
+    "readings": {
+      "soil_ch1": 33,
+      "soil_ch2": 40,
+      "soil_ch3": 48,
+      "soil_ch4": 29
+    },
+    "avg": 38,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-28",
+    "readings": {
+      "soil_ch1": 33,
+      "soil_ch2": 38,
+      "soil_ch3": 47,
+      "soil_ch4": 29
+    },
+    "avg": 37,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-29",
+    "readings": {
+      "soil_ch1": 32,
+      "soil_ch2": 38,
+      "soil_ch3": 47,
+      "soil_ch4": 28
+    },
+    "avg": 36,
+    "action": "watered"
+  },
+  {
+    "date": "2026-07-31",
+    "readings": {
+      "soil_ch1": 32,
+      "soil_ch2": 37,
+      "soil_ch3": 46,
+      "soil_ch4": 29
+    },
+    "avg": 36,
+    "action": "watered"
+  },
+  {
+    "date": "2026-08-01",
+    "readings": {
+      "soil_ch1": 32,
+      "soil_ch2": 37,
+      "soil_ch3": 45,
+      "soil_ch4": 29
+    },
+    "avg": 36,
+    "action": "watered"
+  },
+  {
+    "date": "2026-08-02",
+    "readings": {
+      "soil_ch1": 32,
+      "soil_ch2": 36,
+      "soil_ch3": 45,
+      "soil_ch4": 29
+    },
+    "avg": 36,
+    "action": "watered"
+  },
+  {
+    "date": "2026-08-04",
+    "readings": {
+      "soil_ch1": 32,
+      "soil_ch2": 36,
+      "soil_ch3": 46,
+      "soil_ch4": 29
+    },
+    "avg": 36,
+    "action": "watered"
+  }
+]

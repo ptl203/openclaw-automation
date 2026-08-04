@@ -1,6 +1,7 @@
 requests
 google-genai
 python-dotenv
+tzdata
 playwright
 tenacity
 2captcha-python
