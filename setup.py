@@ -87,18 +87,12 @@ def main():
         sys.exit(1)
 
     print("Generating launchd daemon plists (run independent of GUI login)...")
-    # Lithrop Ledger: 7:00 AM daily
-    generate_plist("com.openclaw.lithrop_ledger", "lithrop_ledger.py", 7, 0)
-    # Job Scraper: Wed (3) 4:00 PM (16)
-    generate_plist("com.openclaw.job_scraper", "job_scraper.py", 16, 0, weekday=3)
-    # Smart Irrigation: 5:00 AM daily (Script skips Mon/Thu)
-    generate_plist("com.openclaw.smart_irrigation", "smart_irrigation.py", 5, 0)
-    # Surf Compare AM: 5:00 AM daily — ranks all beaches in beaches.json
-    generate_plist("com.openclaw.surf_compare_am", "surf_compare.py", 5, 0, extra_args="--am")
-    # Surf Compare PM: 3:00 PM (15) daily
-    generate_plist("com.openclaw.surf_compare_pm", "surf_compare.py", 15, 0, extra_args="--pm")
-    # Timecard Reminder: 6:00 PM (18) weekdays (script skips Sat/Sun)
-    generate_plist("com.openclaw.timecard_reminder", "timecard_reminder.py", 18, 0)
+    # Lithrop Ledger, Job Scraper, Smart Irrigation, Surf Compare AM/PM, and
+    # Timecard Reminder have all been migrated to Claude Code cloud routines
+    # (claude.ai/code/routines) and are intentionally NOT generated here.
+    # Running this script does not remove their old plists if they still
+    # exist locally — see README.md for the current list of cloud triggers.
+    #
     # Log Maintenance: Sun (0) 6:00 AM — rotate automation.log, truncate launchd logs
     generate_plist("com.openclaw.log_maintenance", "log_maintenance.py", 6, 0, weekday=0)
 
