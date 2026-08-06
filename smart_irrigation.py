@@ -1,49 +1,125 @@
 import os
-import json
 import requests
-from datetime import date
-from utils import notify, log_event, wait_for_network, now_local
+from datetime import datetime, timedelta
+from utils import notify, log_event, wait_for_network, now_local, LOCAL_TZ
 
 THRESHOLD = 60          # water when average soil moisture is below this
 WATER_SECONDS = 1500    # 25 minutes
 RACHIO_ZONE_ID = "18401f7e-b1c4-49b5-a1e4-4c3fdd24c8dc"  # Zone 3
 HTTP_TIMEOUT = 15
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-HISTORY_FILE = os.path.join(BASE_DIR, "irrigation-history.json")
-HISTORY_MAX_ENTRIES = 90
+CHANNELS = ["soil_ch1", "soil_ch2", "soil_ch3", "soil_ch4"]
+
+# Monday (0) and Thursday (3): the script never runs a real check on these
+# days regardless of moisture level. fetch_moisture_history() uses this same
+# rule to skip those dates entirely, matching what a real history file would
+# contain (main() returns before recording anything on these days) — without
+# it, a dry Monday would get misclassified as "watered" purely because its
+# moisture happened to read below THRESHOLD, distorting the stall check.
+NON_WATERING_WEEKDAYS = [0, 3]
+
+# How many past days of trend/stall data to reconstruct from Ecowitt's own
+# history, instead of a locally maintained file. This job runs as a cloud
+# routine with no persistent disk between runs, so it can't keep its own
+# history file the way Job Scraper keeps jobs-seen.json (whose git push has,
+# in practice, never once landed since being migrated). Ecowitt already
+# retains historical soil-moisture readings server-side, so each run just
+# asks for them again rather than depending on state surviving a push.
+HISTORY_DAYS = 9
+# The latest sample strictly before this local hour is picked per day (see
+# fetch_moisture_history for why "nearest" would be wrong), matching this
+# script's own ~5 AM run time so derived history reflects the same moment of
+# day as a live check.
+HISTORY_TARGET_HOUR = 5
 
 # Warn when this many consecutive waterings produce less than MIN_RISE
 # points of average-moisture improvement — the sensors aren't seeing the water.
 STALL_WATERINGS = 4
 STALL_MIN_RISE = 3
 
-# Warn when the newest history entry is older than this many days. The max
-# legitimate gap under the Mon/Thu skip schedule is 2 days (Sun->Tue, Wed->Fri);
-# this tolerates one missed run before flagging. Exists to catch a broken
-# git push (this job runs as a cloud routine and commits its own history file
-# back to the repo) — the exact silent-failure mode jobs-seen.json has had
-# since it was migrated: if the push stops working, every run since starts
-# from a stale seed instead of announcing the problem.
-HISTORY_STALE_DAYS = 4
 
+def fetch_moisture_history(now_dt, days=HISTORY_DAYS):
+    """Reconstruct the last `days` days of average soil moisture from Ecowitt's
+    device/history endpoint, in place of a locally maintained history file.
 
-def load_history():
+    Returns a list of {"date": "YYYY-MM-DD", "avg": int, "action": "watered"|
+    "skipped"} for each of the past `days` days — today is excluded, since
+    main() supplies today's entry from the real-time reading it already
+    fetched. `action` is derived deterministically from the same threshold
+    rule this script uses to trigger watering (avg < THRESHOLD), because
+    Ecowitt only knows soil moisture, not whether Rachio's watering request
+    actually succeeded that day. On any fetch error, returns [] rather than
+    raising — the stall check and weekly trend simply have less to work with
+    that run rather than blocking the irrigation check itself.
+    """
+    start = now_dt - timedelta(days=days)
+    params = {
+        "application_key": os.getenv("ECOWITT_APP_KEY"),
+        "api_key": os.getenv("ECOWITT_API_KEY"),
+        "mac": os.getenv("ECOWITT_MAC"),
+        "start_date": start.strftime("%Y-%m-%d %H:%M:%S"),
+        "end_date": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "call_back": ",".join(CHANNELS),
+        "cycle_type": "auto",
+    }
     try:
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE) as f:
-                return json.load(f)
+        resp = requests.get("https://api.ecowitt.net/api/v3/device/history", params=params, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            log_event(f"Ecowitt history API error: {data.get('msg')} (code {data.get('code')})")
+            return []
+        payload = data.get("data") or {}
     except Exception as e:
-        log_event(f"Error loading irrigation history: {e}")
-    return []
+        log_event(f"Ecowitt history fetch failed: {e}")
+        return []
 
+    # Collect every channel's reading at each timestamp: {ts: [val, val, ...]}
+    by_timestamp = {}
+    for ch in CHANNELS:
+        series = (payload.get(ch) or {}).get("soilmoisture", {}).get("list", {})
+        for ts_str, val in series.items():
+            try:
+                ts = int(ts_str)
+                v = int(val)
+            except (TypeError, ValueError):
+                continue
+            by_timestamp.setdefault(ts, []).append(v)
 
-def save_history(history):
-    try:
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(history[-HISTORY_MAX_ENTRIES:], f, indent=2)
-    except Exception as e:
-        log_event(f"Error saving irrigation history: {e}")
+    if not by_timestamp:
+        return []
+
+    # Bucket by local calendar date, keeping only the LATEST sample strictly
+    # before HISTORY_TARGET_HOUR local time for each date — not the nearest
+    # overall. Rachio's watering trigger fires immediately after this script's
+    # own real-time reading each run, and Ecowitt's history shows moisture
+    # spiking right at the target hour (confirmed empirically: value jumps
+    # ~2x at exactly 05:00 local on watering days). Picking "nearest" would
+    # land on that post-watering spike instead of the pre-watering baseline
+    # the live check actually decides on.
+    by_date = {}
+    for ts, values in by_timestamp.items():
+        local_dt = datetime.fromtimestamp(ts, tz=LOCAL_TZ)
+        d = local_dt.date()
+        target = local_dt.replace(hour=HISTORY_TARGET_HOUR, minute=0, second=0, microsecond=0)
+        if local_dt >= target:
+            continue
+        avg = round(sum(values) / len(values))
+        best = by_date.get(d)
+        if best is None or local_dt > best[0]:
+            by_date[d] = (local_dt, avg)
+
+    today = now_dt.date()
+    history = []
+    for d in sorted(by_date):
+        if d >= today:
+            continue  # today's entry comes from the live real-time reading in main()
+        if d.weekday() in NON_WATERING_WEEKDAYS:
+            continue  # the real script never ran a check on this date at all
+        _, avg = by_date[d]
+        action = "watered" if avg < THRESHOLD else "skipped"
+        history.append({"date": d.isoformat(), "avg": avg, "action": action})
+    return history
 
 
 def sensor_response_warning(history):
@@ -72,32 +148,6 @@ def sensor_response_warning(history):
     )
 
 
-def history_staleness_warning(history, today):
-    """Return a warning string if irrigation-history.json hasn't been updated recently.
-
-    Called on the loaded history BEFORE today's entry is appended. A stale
-    newest-entry date means the last N runs' history writes never made it back
-    into the file the next run reads — most likely a broken `git push` from
-    the cloud routine. Surfacing this in the email itself means a broken push
-    announces itself within days instead of quietly rotting the stall check
-    and weekly trend below.
-    """
-    entries = [h for h in history if h.get("date")]
-    if not entries:
-        return None
-    last = date.fromisoformat(entries[-1]["date"])
-    gap = (today - last).days
-    if gap <= HISTORY_STALE_DAYS:
-        return None
-    return (
-        f"⚠️ HISTORY STALE: newest recorded entry is {last} ({gap} days ago). "
-        f"irrigation-history.json isn't being updated between runs — the "
-        f"sensor-stall check above and any weekly trend below are computed "
-        f"from stale data. If this job runs as a cloud routine, its git push "
-        f"of irrigation-history.json is likely failing; check that first."
-    )
-
-
 def weekly_trend_lines(history):
     """A 7-day readings/action table, appended to Sunday's email."""
     entries = [h for h in history if "avg" in h][-7:]
@@ -114,7 +164,7 @@ def main():
     wait_for_network()
 
     # Skip Monday (0) and Thursday (3)
-    if now_local().weekday() in [0, 3]:
+    if now_local().weekday() in NON_WATERING_WEEKDAYS:
         log_event(f"Skipping Irrigation Check: {now_local().strftime('%A')} is a non-watering day.")
         return
 
@@ -162,12 +212,11 @@ def main():
 
     # Step 2: Evaluate
     avg_moisture = round(sum(readings.values()) / len(readings)) if readings else 0
-    history = load_history()
 
     now_dt = now_local()
     now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
     today = now_dt.strftime("%Y-%m-%d")
-    staleness_warning = history_staleness_warning(history, now_dt.date())
+    past_history = fetch_moisture_history(now_dt)
     report_lines = [f"Irrigation Check - {now}"]
     for ch, val in readings.items():
         report_lines.append(f"{ch}: {val}%")
@@ -213,31 +262,17 @@ def main():
             report_lines.append(f"Status: FAILED to trigger Rachio: {e}")
             subject = "Irrigation Error: Rachio trigger failed"
 
-    # Drop any existing entry for today before appending, so a manual re-run
-    # (or an overlapping launchd + cloud-routine run) can't double-count a
-    # date in the stall check or the 7-day trend table.
-    history = [h for h in history if h.get("date") != entry["date"]]
-    history.append(entry)
-    save_history(history)
+    # past_history (from Ecowitt) never includes today, so no dedupe is needed.
+    history = past_history + [entry]
 
     warning = sensor_response_warning(history)
     if warning:
         report_lines.insert(1, "")
         report_lines.insert(1, warning)
 
-    if staleness_warning:
-        report_lines.insert(1, "")
-        report_lines.insert(1, staleness_warning)
-
     # Sunday: append the weekly trend table
     if now_dt.weekday() == 6:
         report_lines.extend(weekly_trend_lines(history))
-
-    # Machine-readable footer: durably archives today's data point in the
-    # inbox regardless of whether irrigation-history.json's git push
-    # succeeds. If the push breaks for a while, the file is reconstructable
-    # by grepping these lines out of the sent emails.
-    report_lines += ["", "---", "HISTORY ENTRY: " + json.dumps(entry, separators=(",", ":"))]
 
     if notify(subject, "\n".join(report_lines)):
         log_event("Irrigation Check finished.")

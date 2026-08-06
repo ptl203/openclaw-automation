@@ -15,9 +15,14 @@ __pycache__/
 automation.log
 
 # Runtime state
-# jobs-seen.json and irrigation-history.json are intentionally NOT ignored: both
-# routines run cloud-side with no local disk between invocations, so each commits
-# its state file back to the repo after every run to persist across sessions.
+# jobs-seen.json is intentionally NOT ignored: the Job Scraper routine (cloud, no
+# local disk between runs) commits it after each run for cross-session dedup memory.
+irrigation-history.json
+# ^ Smart Irrigation used to maintain this the same way, but no longer does: it
+# derives sensor-stall/trend history straight from Ecowitt's own device/history
+# API each run instead, since Ecowitt already retains it server-side — no push
+# dependency needed. This file is now just a local artifact from before that
+# change; it's ignored again and no longer read or written by the script.
 
 # Surf Compare's --data-only -> --render cache (avoids re-hitting Stormglass's
 # 10/day free-tier quota between the two steps of one routine run)
