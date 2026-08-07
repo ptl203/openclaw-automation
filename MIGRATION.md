@@ -108,28 +108,55 @@ locally-maintained `irrigation-history.json`, un-gitignored so the routine
 could `git commit` + `git push` it back after each run — mirroring how Job
 Scraper persists `jobs-seen.json`. **This was abandoned before shipping.**
 
-Investigating why every push attempt returned a 403 turned up two things
-worth recording:
+Investigating why every push attempt returned a 403 took two passes to get
+right, and the first theory turned out to be wrong — worth recording both,
+since the wrong one was plausible enough to act on before it was disproven.
 
-- **Claude Code routines genuinely can push to a repo** (see
-  `code.claude.com/docs/en/routines`). Pushes to `claude/`-prefixed branches
-  are always accepted; pushes to other branches (e.g. `main`) are rejected
-  only if the branch is GitHub-protected, someone else has an open PR from
-  it, or **the new commits are authored by someone other than the routine's
-  own authenticated identity**. Every push probe run here set a fabricated
-  git identity before committing (`user.email
-  "routine@openclaw-automation.local"`, later `"Claude
-  <noreply@anthropic.com>"`) — never the real identity behind the
-  environment's GitHub proxy — which is almost certainly why GitHub returned
-  a genuine 403 (confirmed via `X-Github-Request-Id`) rather than a 401. A
-  `GH_PUSH_TOKEN` secret was added to the environment to try to work around
-  this; it was never actually consulted (git only hands a token to a
-  credential helper after a 401 challenge) and was later removed as a red
-  herring.
-- **This is very likely why Job Scraper's `jobs-seen.json` push has never
-  landed either** — same environment, same pattern. Not yet fixed; the
-  probable fix is to stop overriding `user.name`/`user.email` before
-  committing and push straight to `main` with the routine's real identity.
+**First theory (incorrect): fabricated commit identity.** Anthropic's docs
+on routines (`code.claude.com/docs/en/routines`) say pushes to non-`claude/`
+branches are rejected if "the branch carries commits authored by someone
+other than you," among other conditions. Every push probe here set a
+fabricated git identity before committing (`user.email
+"routine@openclaw-automation.local"`, later `"Claude
+<noreply@anthropic.com>"`), so that looked like the obvious cause. A
+`GH_PUSH_TOKEN` PAT (fine-grained, `Contents: Read and write`, scoped to
+this repo) was added to the environment to try to route around it via a
+custom `credential.helper`. **This theory was disproven** when a separate
+routine (Job Scraper) fixed its commit's author identity and retried —
+same 403, unchanged. It also independently hit `403 Resource not
+accessible by integration` on a GitHub-App-based MCP write tool, which is
+GitHub's own wording for an installation-level permission gap, not
+anything about commit authorship.
+
+**Actual root cause: only an OAuth App authorization existed, no GitHub
+App was installed.** GitHub has two separate connection types. The
+account-level "Authorized OAuth Apps" connection — created by `/web-setup`
+when GitHub was first connected to Claude Code — grants broad OAuth scopes
+and, per Anthropic's docs, is specifically described as **granting
+repository access for cloning**: read-only by design. Fine-grained,
+per-repo write permissions (`Contents: Read and write`) only exist on a
+separate, opt-in **installed GitHub App**, which this account never had.
+Every push attempt — git push, the custom `GH_PUSH_TOKEN` credential
+helper, and the GitHub-App MCP tool — was capped by the same missing
+installation, regardless of commit identity or which token was handed to
+git (per the docs, "the git client inside the VM uses a scoped credential,
+which the proxy verifies and swaps for your actual GitHub token" — the
+proxy substitutes its own managed credential for git operations
+regardless of what a routine's `credential.helper` supplies, so the
+`GH_PUSH_TOKEN` PAT was likely never actually consulted).
+
+**Fix:** install the Claude GitHub App (`claude.ai/code/routines` → edit
+any routine → **Select a trigger** → **Add another trigger** → **GitHub
+event**, which prompts the install if missing) with `Contents: Read and
+write` granted for this repo. Confirmed working immediately afterward: an
+ambient `git push` — no custom token, no identity override — landed a
+commit on `origin/main`, independently verified via `git fetch` rather
+than trusting the routine's own report. The `GH_PUSH_TOKEN` secret was
+removed from the environment as unnecessary.
+
+This was also the reason Job Scraper's `jobs-seen.json` push had never
+landed — same missing installation, same fix. Worth retrying once the App
+install is in place.
 
 Rather than chase the git-identity fix for irrigation too, `smart_irrigation.py`
 now reconstructs the last 9 days of sensor readings directly from Ecowitt's
