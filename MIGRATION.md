@@ -200,3 +200,62 @@ same across the flip — only the hour changes, since 6 PM Pacific always
 lands on the next UTC calendar day regardless of DST. Job Scraper's
 day-of-week field *does* shift, because 4 PM Pacific crosses local midnight
 into the next UTC day only during PST, not PDT.
+
+### Live routine state (verified 2026-09-27)
+
+Fetched from the remote-trigger API rather than read off the web UI. Reference
+copies of all seven routine definitions, including verbatim prompts, are in
+[`routines/`](routines/).
+
+| Routine | ID | Enabled | Last fired | Next run |
+|---|---|---|---|---|
+| Lithrop Ledger | `trig_01DRUBrmBDNGfdQP8seyCHGn` | ✅ | 2026-09-27 14:18Z | 2026-09-28 14:17Z |
+| Surf Compare AM | `trig_01HyLkz3idKtaYPKDQfPbXJb` | ✅ | 2026-09-27 12:16Z | 2026-09-28 12:14Z |
+| Surf Compare PM | `trig_01GDMWRNhXs4Y8DvJMEHVXTS` | ✅ | 2026-09-27 22:05Z | 2026-09-28 22:03Z |
+| Smart Irrigation | `trig_01WGPQDZ7mtzbqYAYs7GV2us` | ✅ | 2026-09-27 12:15Z | 2026-09-29 12:14Z |
+| Timecard Reminder | `trig_015MTNH35B8Rq7dpkrACg3wt` | ✅ | 2026-09-26 01:15Z | 2026-09-29 01:15Z |
+| Job Scraper | `trig_01LKJqozwmUKgK6DXasCg4ey` | ❌ | 2026-08-12 23:06Z | (stale: 2026-08-19) |
+| Push Credential Probe | `trig_013dBLXDQx525BWcSQr4xyeF` | ❌ | 2026-08-07 00:58Z | 2027-01-01 |
+
+All run on environment `env_01PGViDA3Cjkh1aMfCf73kyi` ("Default"), model
+`claude-sonnet-5`, source `github.com/ptl203/openclaw-automation`, with tools
+`Bash,Read,Write,Edit,Glob,Grep` (Job Scraper adds `WebSearch` for its Tier-2
+search step).
+
+**Job Scraper is disabled, deliberately** (confirmed 2026-09-28). It last ran
+2026-08-12 — the run that produced the `Job Scraper: mark 22 new postings as
+seen` commit — and its `next_run_at` is frozen at 2026-08-19, in the past. The
+timing looked like a fault, because it was switched off immediately after the
+GitHub App fix finally made its `jobs-seen.json` push work. It isn't: the job
+search simply wasn't needed any more. The code and its dedup state are left
+intact so the routine can be re-enabled without rework.
+
+**Smart Irrigation is paused** (2026-09-28), also deliberate. The soil sensors
+were moved out of the vegetable garden they were calibrated for and into
+established plants, which makes the 60% threshold and 25-minute drip cycle wrong
+for what they're now measuring — see the vault's
+`Decisions/ADR-009-Irrigation-Paused-Pending-Replanting`. It stays paused until a
+new garden is planted and the thresholds are re-derived. Its last run succeeded
+(2026-09-27 12:16Z).
+
+**Push Credential Probe** is the throwaway diagnostic from the 403
+investigation above, left disabled with a `0 0 1 1 *` (annual) cron. Its
+`.push-probe` file was already removed from the repo in commit `a167d7f`. The
+routine itself can be deleted from the web UI — the API cannot delete routines.
+
+**Two MCP observations.** Smart Irrigation and Timecard Reminder each carry five
+connectors (Gmail, Google Calendar, Monarch, Google Drive, Claude Code Remote)
+that neither one uses — both send their own email in-process via Resend. The
+three routines doing the most work (Ledger, both Surf) have no connectors at
+all, and don't need any. The attachments are harmless but they widen each run's
+capability surface for no benefit; worth pruning.
+
+**Stale wording in the live prompts.** Surf Compare AM/PM and Job Scraper all
+describe `utils.send_email`/`send_html_email` as "the repo's existing, tested
+SMTP delivery function". Delivery moved to Resend on 2026-07-24 (commit
+`964b116`); the commands are right, only the description is stale. Job Scraper's
+STEP 8 also still sets the fabricated git identity
+(`routine@openclaw-automation.local`) that this document's investigation
+disproved as the cause of the 403s — dead weight, not load-bearing. Fixing any
+of these means editing the live routine on the platform, then re-exporting to
+`routines/`.
