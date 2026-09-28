@@ -313,20 +313,27 @@ def _in_arc(angle, start, end):
 
 
 def size_score(height_ft):
-    """0–1 score peaking at 1.0 across the ideal 2–4 ft band."""
+    """0–1 score peaking at 1.0 across the ideal 3–5 ft band.
+
+    Retargeted from 2–4 ft on 2026-09-28 (ADR-010): steeper penalty below the
+    band, more tolerance above it. Continuous everywhere except the intentional
+    0.5 ft floor — the old curve jumped 0.795 → 1.00 at exactly 2.0 ft.
+    """
     if height_ft < 0.5:
         return 0.05
     if height_ft < 1.0:
-        return 0.15 + (height_ft - 0.5) * 0.40    # 0.15 → 0.35
+        return 0.10 + (height_ft - 0.5) * 0.20    # 0.10 → 0.20
     if height_ft < 2.0:
-        return 0.35 + (height_ft - 1.0) * 0.45    # 0.35 → 0.80
-    if height_ft <= 4.0:
-        return 1.0                                   # ideal band
+        return 0.20 + (height_ft - 1.0) * 0.20    # 0.20 → 0.40
+    if height_ft < 3.0:
+        return 0.40 + (height_ft - 2.0) * 0.60    # 0.40 → 1.00
     if height_ft <= 5.0:
-        return 1.0 - (height_ft - 4.0) * 0.25      # 1.0 → 0.75
+        return 1.0                                   # ideal band
     if height_ft <= 6.0:
-        return 0.75 - (height_ft - 5.0) * 0.25     # 0.75 → 0.50
-    return max(0.10, 0.50 - (height_ft - 6.0) * 0.15)
+        return 1.0 - (height_ft - 5.0) * 0.15      # 1.00 → 0.85
+    if height_ft <= 8.0:
+        return 0.85 - (height_ft - 6.0) * 0.175    # 0.85 → 0.50
+    return max(0.10, 0.50 - (height_ft - 8.0) * 0.15)
 
 
 def period_score(period_s):
@@ -556,6 +563,14 @@ _STAR_MAP = [(90, 5), (75, 4), (55, 3), (38, 2), (0, 1)]
 
 # Minimum raw score for a GO recommendation (≥ ★★★★ — a notably good day)
 GO_THRESHOLD = 75
+
+# Minimum wave height for a GO, independent of score (ADR-010). Size is only 18%
+# of the total, so on a clean day no realistic size weighting pulls a small
+# swell under GO_THRESHOLD — a glassy 2 ft morning still scores 86. This floor
+# states the size requirement directly instead of distorting the weights. Stars
+# are deliberately NOT capped by it: a clean 2.4 ft day reports 5★ and NO GO
+# (2.0 ft reports 4★), and the verdict writer is told the floor is the reason.
+MIN_GO_HEIGHT_FT = 2.5
 
 
 def score_conditions(hour, facing_dir, swell_exposure=None, tide_extremes=None,

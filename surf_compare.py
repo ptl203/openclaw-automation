@@ -9,7 +9,7 @@ from google import genai
 from utils import (
     notify, log_event, wait_for_network,
     filter_nearby_hours, fetch_stormglass, fetch_tide_extremes,
-    score_conditions, tide_state, GO_THRESHOLD,
+    score_conditions, tide_state, GO_THRESHOLD, MIN_GO_HEIGHT_FT,
 )
 
 _PT = ZoneInfo("America/Los_Angeles")
@@ -184,7 +184,16 @@ def score_and_summarize(results, tide_extremes, args, now=None):
     # Rank best → worst by total score
     ranked = sorted(scored, key=lambda x: x["score"]["total"], reverse=True)
 
-    go         = ranked[0]["score"]["total"] >= GO_THRESHOLD
+    # GO needs both a good score and enough size. The height floor is separate
+    # from the score because size is only 18% of it — a clean 2 ft day still
+    # scores 86 (ADR-010). Stars are left alone, so a 5★ NO GO is possible and
+    # intended; undersized_only tells the verdict writer to say why.
+    top_score     = ranked[0]["score"]["total"]
+    top_height_ft = ranked[0]["score"]["height_ft"]
+    score_ok      = top_score >= GO_THRESHOLD
+    size_ok       = top_height_ft >= MIN_GO_HEIGHT_FT
+    go            = score_ok and size_ok
+    undersized_only = score_ok and not size_ok
     go_str     = "✅ GO SURF" if go else "❌ NO GO"
     context    = "5AM dawn patrol" if args.am else "3PM afternoon"
     header_emoji  = "🌅" if args.am else "🏄"
@@ -225,6 +234,16 @@ def score_and_summarize(results, tide_extremes, args, now=None):
             f"less, say the beaches are effectively tied today and to pick by convenience — "
             f"do NOT invent a differentiator."
         )
+    elif undersized_only:
+        verdict_instruction = (
+            f"This is a NO GO purely on size: conditions score well "
+            f"({top_score}/100, {ranked[0]['score']['stars']}★) but the best beach is only "
+            f"{top_height_ft} ft, under the {MIN_GO_HEIGHT_FT} ft minimum worth paddling out for. "
+            f"In 2–3 sentences say plainly that it's clean but too small — name what IS good "
+            f"about it (wind, period, tide, whichever sub-scores are strong) so the rating makes "
+            f"sense, then say it isn't worth it at this size. Do NOT describe the surf as bad, "
+            f"blown out, or poor quality, and do NOT contradict the star rating."
+        )
     else:
         verdict_instruction = (
             "Explain in 2–3 sentences why none of the beaches are worth surfing today. "
@@ -245,6 +264,7 @@ def score_and_summarize(results, tide_extremes, args, now=None):
         "now": now,
         "go": go,
         "go_str": go_str,
+        "undersized_only": undersized_only,
         "context": context,
         "header_emoji": header_emoji,
         "session_label": session_label,
