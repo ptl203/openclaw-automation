@@ -1,6 +1,6 @@
 # Routine: Lithrop Ledger
 
-Exported 2026-10-09 from `claude.ai/code/routines` via the remote-trigger API.
+Exported 2026-10-08 from `claude.ai/code/routines` via the remote-trigger API.
 **This file is reference only — editing it changes nothing.** See `README.md` in this directory.
 
 ## Configuration
@@ -26,7 +26,7 @@ Exported 2026-10-09 from `claude.ai/code/routines` via the remote-trigger API.
     "Grep"
   ],
   "mcp_connections": [],
-  "last_fired_at": "2026-10-09T04:01:14.565536Z",
+  "last_fired_at": "2026-10-09T04:15:40.901870Z",
   "next_run_at": "2026-10-09T14:17:39.402149798Z"
 }
 ```
@@ -37,7 +37,16 @@ Exported 2026-10-09 from `claude.ai/code/routines` via the remote-trigger API.
 You are running the daily "Lithrop Ledger" newsletter job for Paul. The repo `openclaw-automation` is already checked out as your working directory.
 
 STEP 1 — Install dependencies:
-Run `python3 -m pip install -q -r requirements.txt`. Some packages in that file (playwright, 2captcha-python) are for an unrelated archived script and may fail to install or need extra setup — ignore failures on those two specifically. Every other package (requests, feedparser, beautifulsoup4, tenacity, python-dotenv, google-genai) must install successfully.
+Run `python3 -m pip install -q -r requirements.txt`. Every package in that file ships a prebuilt wheel, so this is expected to succeed as a whole — including playwright and 2captcha-python, which belong to an unrelated archived script but still install cleanly.
+
+pip resolves and builds the whole set before installing any of it, so the outcome is all-or-nothing: if the command reports an error, assume NOTHING was installed, including packages unrelated to the error and packages whose own download succeeded. Do not assume only the named package failed. Confirm the install actually worked before continuing:
+python3 -c "import requests, bs4, tenacity, dotenv, google.genai; print('deps ok')"
+
+If that import check fails, do not install packages one at a time, do not edit requirements.txt, and do not `pip install --upgrade pip setuptools wheel` (the sandbox's wheel is Debian-managed and cannot be uninstalled). Instead retry once in a clean virtualenv:
+python3 -m venv /tmp/ledger-venv && /tmp/ledger-venv/bin/python -m pip install -q -r requirements.txt
+If that succeeds, use `/tmp/ledger-venv/bin/python` in place of `python3` for EVERY later python3 command in this run. If it also fails, stop and report the exact pip error.
+
+Either way, state in your final report whether the plain install worked or the virtualenv fallback was needed, and quote the exact pip error if there was one.
 
 STEP 2 — Fetch the data:
 Run `python3 lithrop_ledger.py --data-only`. It prints ONE JSON object to stdout with these keys: date, weekend_tag, market_table, world_news, us_news, financial_news, tech_news, mlb_playoffs, rangers_standings, rangers_next_game, rangers_news, uplifting_news. Do not run any other mode of this script and do not edit it. Treat every value in that JSON as the ONLY source of truth for step 3 — never add outside information you didn't get from this data, and never invent details not present in it.

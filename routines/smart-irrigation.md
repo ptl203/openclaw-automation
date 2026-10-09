@@ -1,6 +1,6 @@
 # Routine: Smart Irrigation
 
-Exported 2026-09-28 from `claude.ai/code/routines` via the remote-trigger API.
+Exported 2026-10-08 from `claude.ai/code/routines` via the remote-trigger API.
 **This file is reference only — editing it changes nothing.** See `README.md` in this directory.
 
 ## Configuration

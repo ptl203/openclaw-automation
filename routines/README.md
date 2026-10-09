@@ -6,11 +6,13 @@ scripts are version-controlled here; the *orchestration* — which flags get run
 what order, and the instructions telling the routine's model how to write a
 newsletter or a surf verdict — lives only in the routine config on the platform.
 
-**This directory is a reference snapshot of that config, exported 2026-10-09.**
+**This directory is a reference snapshot of that config, exported 2026-10-08.**
 
 Three of the seven are intentionally not running: Job Scraper (switched off on
 purpose), Smart Irrigation (paused until a new garden is planted), and the Push
-Credential Probe (spent diagnostic).
+Credential Probe (spent diagnostic). A fourth, **Timecard Reminder, is also
+disabled** — noticed during the 2026-10-08 export, cause unknown; it still has a
+`next_run_at`, so it is scheduled but switched off.
 
 > ⚠️ **These files are not the source of truth and are not wired to anything.**
 > Editing a file here changes nothing. The live definition lives on the platform.
@@ -31,7 +33,7 @@ this snapshot is the only record of what it said.
 | `surf-compare-am.md` | Surf Compare AM | ✅ | `0 12 * * *` | daily 5:00 AM |
 | `surf-compare-pm.md` | Surf Compare PM | ✅ | `0 22 * * *` | daily 3:00 PM |
 | `smart-irrigation.md` | Smart Irrigation | ⏸️ **paused** | `0 12 * * 0,2,3,5,6` | daily 5:00 AM, skip Mon/Thu |
-| `timecard-reminder.md` | Timecard Reminder | ✅ | `0 1 * * 2-6` | weekdays 6:00 PM |
+| `timecard-reminder.md` | Timecard Reminder | ❌ disabled (cause unknown) | `0 1 * * 2-6` | weekdays 6:00 PM |
 | `job-scraper.md` | Job Scraper | ❌ disabled (deliberate) | `0 23 * * 3` | Wed 4:00 PM |
 | `push-credential-probe.md` | Push Credential Probe | ❌ disabled | `0 0 1 1 *` | diagnostic, one-off |
 
@@ -79,6 +81,13 @@ live routine, not this file:
   identity was *disproven* as the cause of the 403s — the real cause was a
   missing GitHub App installation — so these two lines are leftover from a
   dead theory and are no longer load-bearing.
+- **Dependency install (resolved 2026-10-08):** all four prompts that install
+  `requirements.txt` used to say failures on playwright and 2captcha-python could
+  be ignored while "everything else must install successfully". pip builds the
+  whole resolution set before installing any of it, so that was never possible —
+  one failed build installs nothing. `feedparser` (the one package needing a
+  source build) was removed and all four prompts were rewritten; they now state
+  the all-or-nothing behavior, verify imports, and specify a virtualenv retry.
 - **Unnecessary MCP connections:** Smart Irrigation and Timecard Reminder each
   have five connectors attached (Gmail, Google Calendar, Monarch, Google Drive,
   Claude Code Remote). Neither uses any of them — both send email in-process via

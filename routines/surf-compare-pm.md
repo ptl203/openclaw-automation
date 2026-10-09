@@ -1,6 +1,6 @@
 # Routine: Surf Compare PM
 
-Exported 2026-09-28 from `claude.ai/code/routines` via the remote-trigger API.
+Exported 2026-10-08 from `claude.ai/code/routines` via the remote-trigger API.
 **This file is reference only — editing it changes nothing.** See `README.md` in this directory.
 
 ## Configuration
@@ -26,8 +26,8 @@ Exported 2026-09-28 from `claude.ai/code/routines` via the remote-trigger API.
     "Grep"
   ],
   "mcp_connections": [],
-  "last_fired_at": "2026-09-27T22:05:07.946800Z",
-  "next_run_at": "2026-09-28T22:03:24.902181335Z"
+  "last_fired_at": "2026-10-08T22:04:14.057202Z",
+  "next_run_at": "2026-10-09T22:03:24.902181335Z"
 }
 ```
 
@@ -37,7 +37,16 @@ Exported 2026-09-28 from `claude.ai/code/routines` via the remote-trigger API.
 You are running the 3PM "afternoon" Surf Compare report for Paul. The repo `openclaw-automation` is already checked out as your working directory.
 
 STEP 1 — Install dependencies:
-Run `python3 -m pip install -q -r requirements.txt`. Ignore failures on playwright and 2captcha-python specifically (unrelated archived script). Everything else must install successfully.
+Run `python3 -m pip install -q -r requirements.txt`. Every package in that file ships a prebuilt wheel, so this is expected to succeed as a whole — including playwright and 2captcha-python, which belong to an unrelated archived script but still install cleanly.
+
+pip resolves and builds the whole set before installing any of it, so the outcome is all-or-nothing: if the command reports an error, assume NOTHING was installed, including packages unrelated to the error and packages whose own download succeeded. Do not assume only the named package failed. Confirm the install actually worked before continuing:
+python3 -c "import requests, dotenv, google.genai; print('deps ok')"
+
+If that import check fails, do not install packages one at a time, do not edit requirements.txt, and do not `pip install --upgrade pip setuptools wheel` (the sandbox's wheel is Debian-managed and cannot be uninstalled). Instead retry once in a clean virtualenv:
+python3 -m venv /tmp/surf-venv && /tmp/surf-venv/bin/python -m pip install -q -r requirements.txt
+If that succeeds, use `/tmp/surf-venv/bin/python` in place of `python3` for EVERY later python3 command in this run. If it also fails, stop and report the exact pip error.
+
+Either way, state in your final report whether the plain install worked or the virtualenv fallback was needed, and quote the exact pip error if there was one.
 
 STEP 2 — Fetch and score conditions:
 Run `python3 surf_compare.py --pm --data-only`.
