@@ -6,7 +6,7 @@ scripts are version-controlled here; the *orchestration* — which flags get run
 what order, and the instructions telling the routine's model how to write a
 newsletter or a surf verdict — lives only in the routine config on the platform.
 
-**This directory is a reference snapshot of that config, exported 2026-09-28.**
+**This directory is a reference snapshot of that config, exported 2026-10-09.**
 
 Three of the seven are intentionally not running: Job Scraper (switched off on
 purpose), Smart Irrigation (paused until a new garden is planted), and the Push

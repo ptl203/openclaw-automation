@@ -1,6 +1,6 @@
 # Routine: Lithrop Ledger
 
-Exported 2026-09-28 from `claude.ai/code/routines` via the remote-trigger API.
+Exported 2026-10-09 from `claude.ai/code/routines` via the remote-trigger API.
 **This file is reference only — editing it changes nothing.** See `README.md` in this directory.
 
 ## Configuration
@@ -26,8 +26,8 @@ Exported 2026-09-28 from `claude.ai/code/routines` via the remote-trigger API.
     "Grep"
   ],
   "mcp_connections": [],
-  "last_fired_at": "2026-09-27T14:18:20.961855Z",
-  "next_run_at": "2026-09-28T14:17:39.402149798Z"
+  "last_fired_at": "2026-10-09T04:01:14.565536Z",
+  "next_run_at": "2026-10-09T14:17:39.402149798Z"
 }
 ```
 
@@ -40,7 +40,7 @@ STEP 1 — Install dependencies:
 Run `python3 -m pip install -q -r requirements.txt`. Some packages in that file (playwright, 2captcha-python) are for an unrelated archived script and may fail to install or need extra setup — ignore failures on those two specifically. Every other package (requests, feedparser, beautifulsoup4, tenacity, python-dotenv, google-genai) must install successfully.
 
 STEP 2 — Fetch the data:
-Run `python3 lithrop_ledger.py --data-only`. It prints ONE JSON object to stdout with these keys: date, weekend_tag, market_table, world_news, us_news, financial_news, tech_news, pll_standings, pll_next_event, redwoods_news, padres_summary, padres_standing, padres_news, uplifting_news. Do not run any other mode of this script and do not edit it. Treat every value in that JSON as the ONLY source of truth for step 3 — never add outside information you didn't get from this data, and never invent details not present in it.
+Run `python3 lithrop_ledger.py --data-only`. It prints ONE JSON object to stdout with these keys: date, weekend_tag, market_table, world_news, us_news, financial_news, tech_news, mlb_playoffs, rangers_standings, rangers_next_game, rangers_news, uplifting_news. Do not run any other mode of this script and do not edit it. Treat every value in that JSON as the ONLY source of truth for step 3 — never add outside information you didn't get from this data, and never invent details not present in it.
 
 STEP 3 — Write the newsletter:
 Using ONLY the JSON from step 2, write a complete HTML email document following this exact spec:
@@ -63,7 +63,7 @@ Apply strict significance criteria per section:
 - US NEWS: Federal policy and legislation, Congressional votes, Supreme Court decisions, major national disasters or crises, high-profile national stories with broad public impact, and notable regional/state stories with real national relevance (major economic impact, precedent-setting rulings, significant public-safety events). Exclude: routine state/city politics or purely local events with no broader relevance.
 - FINANCIAL NEWS: Major market moves, central bank policy decisions, significant earnings from large publicly traded companies, major macroeconomic data releases (CPI, jobs, GDP, etc.).
 - TECH NEWS: Significant product launches or major releases from notable companies, large acquisitions or mergers, major regulatory actions against tech companies, breakthrough research from credible institutions. Exclude: puzzle/game hints or answers (Wordle, Connections, Strands, crosswords), app-of-the-day filler, deals/shopping roundups, and "what to watch" listicles — these are never significant.
-- SPORTS: Render PLL standings and schedule VERBATIM from pll_standings/pll_next_event — do not alter scores, records, or times. If pll_standings or pll_next_event is one of its "(...unavailable)" / "(No upcoming PLL games found)" placeholder messages rather than real data, display that message as a single line of text instead of an empty table — never render an empty table. Summarize redwoods_news and padres_news into 1-2 items each (only genuine significance — roster moves, injuries, notable performances, contract news; skip fluff). Render padres_summary/padres_standing VERBATIM.
+- SPORTS: Render mlb_playoffs and rangers_standings VERBATIM — do not alter series results, records, or times. If either is one of its "(...unavailable)" / "(No MLB postseason data available)" placeholder messages rather than real data, display that message as a single line of text instead of an empty table — never render an empty table. Render rangers_next_game VERBATIM, including its "(No upcoming Rangers games found)" / "(Rangers schedule unavailable)" placeholder if that is what it holds. Summarize rangers_news into 1-2 items (only genuine significance — roster moves, injuries, notable performances, contract news; skip fluff). rangers_news is a keyword search: it may contain stories about the Texas Rangers baseball team or other unrelated "Rangers" — skip anything that is not about the NHL's New York Rangers, and if nothing in the pool qualifies, omit the news items rather than including an off-topic story.
 
 STORY DEPTH: Write 4-6 substantive sentences per story, drawing on the "Full text (excerpt)" when provided in the data — include specifics: names, numbers, quotes, and context. For stories with only a short description, write what the source supports and no more; NEVER invent details not present in the raw data. For major, high-impact stories (wars, landmark legislation, large market moves, major acquisitions) write comprehensive coverage with full context — no upper sentence limit. Do not pad minor stories with filler.
 
@@ -100,8 +100,8 @@ SECTIONS IN ORDER: 1. Header, 2. Markets (table), 3. World News (4-5 stories), 4
 
 SPORTS SECTION SPEC (section 7, after Technology):
 Use <h2> "Sports" as the section header. Divide into two labeled sub-blocks, each with a sub-header <h3> (font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#555; margin:16px 0 8px):
-  SUB-BLOCK A — "Premier Lacrosse League": PLL Standings table (same styling as the Markets table — dark header row, alternating rows; columns # | Team | W | L, populated verbatim from pll_standings). If pll_standings is its "(PLL standings unavailable)" placeholder message rather than real data, display that message as a single <p style="color:#888;"> instead of an empty table. After the table, a small <p style="font-size:13px;color:#555;margin:8px 0 14px;"> listing the games from pll_next_event, one game per line using <br>. If pll_next_event is its "(No upcoming PLL games found)" or "(PLL schedule unavailable)" placeholder message, display that message instead of an empty list. Then redwoods_news: 1-2 items in STORY FORMAT.
-  SUB-BLOCK B — "San Diego Padres": a <div style="background:#f7f7f7;border-left:3px solid #1a1a1a;padding:10px 14px;margin-bottom:14px;font-size:14px;line-height:1.8;color:#333;"> showing Last game, Next game, and Standing from padres_summary/padres_standing — three lines, labels in <strong>. Then padres_news: 1-2 items in STORY FORMAT.
+  SUB-BLOCK A — "MLB Playoffs": playoff table (same styling as the Markets table — dark header row, alternating rows; columns Round | Matchup | Status, populated verbatim from the table rows in mlb_playoffs). If mlb_playoffs is its "(No MLB postseason data available)" or "(MLB playoff data unavailable)" placeholder message rather than real data, display that message as a single <p style="color:#888;"> instead of an empty table. mlb_playoffs may end with a "NEXT UP" block listing games in the next few days; if present, render those lines after the table as a small <p style="font-size:13px;color:#555;margin:8px 0 14px;">, one game per line using <br>. If there is no NEXT UP block, omit that paragraph entirely — do not invent games.
+  SUB-BLOCK B — "New York Rangers": Metropolitan Division table (same styling as the Markets table; columns # | Team | GP | W | L | OTL | PTS, populated verbatim from the table rows in rangers_standings), with the New York Rangers row in font-weight:700. If rangers_standings is its "(Rangers standings unavailable)" placeholder message, display that message as a single <p style="color:#888;"> instead of an empty table. After the table, a <div style="background:#f7f7f7;border-left:3px solid #1a1a1a;padding:10px 14px;margin-bottom:14px;font-size:14px;line-height:1.8;color:#333;"> showing two lines, labels in <strong>: the "Rangers:" summary line from the end of rangers_standings (omit this line if rangers_standings is a placeholder), and rangers_next_game verbatim. Then rangers_news: 1-2 items in STORY FORMAT.
 Wrap the entire Sports section in: <div style="margin-bottom:28px;">
 
 FOOTER: margin-top:32px; border-top:1px solid #e0e0e0; padding-top:14px; text-align:center — <p> font-size:11px; color:#aaa; letter-spacing:1px — "THE LITHROP LEDGER — {date}"
