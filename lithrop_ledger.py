@@ -39,6 +39,16 @@ def _fmt_pt(utc_str):
         return utc_str
 
 
+def _ordinal(n):
+    """1 -> "1st", 2 -> "2nd". Falls back to the raw value for anything non-numeric."""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return str(n) if n is not None else "?"
+    suffix = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 _BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
 
 
@@ -472,207 +482,211 @@ def fetch_rss_feed(url, limit=1):
 
 # ── Sports fetchers ────────────────────────────────────────────────────────────
 
-def get_pll_standings():
-    """Return a formatted standings table for the Premier Lacrosse League.
+def get_mlb_playoff_landscape():
+    """Return a formatted table of the current MLB postseason bracket.
 
-    Retries on transient fetch errors — a single ESPN blip used to fall straight to the
-    "(PLL standings unavailable)" placeholder, which the newsletter prompt then had no
-    table rows to render, leaving the Sports sub-block looking empty instead of showing
-    an explanatory message.
+    MLB pre-formats each series' state in seriesStatus.result ("TB wins 3-0",
+    "Series tied 2-2"), so this function does no arithmetic on game scores and the
+    newsletter renders the string verbatim — the same discipline that keeps the
+    markets table trustworthy.
+
+    Only series that have started, or whose Game 1 is within a week, are listed:
+    MLB publishes the whole bracket skeleton from Wild Card to World Series, and
+    an unresolved "AL vs NL" row two weeks out is noise, not landscape.
+
+    Retries on transient fetch errors: a single blip on the old ESPN-backed sports
+    fetchers used to empty the whole Sports sub-block, so every fetcher here gets
+    the same three attempts before falling back to a placeholder.
     """
     retries = 3
+    round_order = {"F": 1, "D": 2, "L": 3, "W": 4}
+    season = datetime.now(_PT).year
     for attempt in range(retries):
         try:
             resp = requests.get(
-                "https://site.api.espn.com/apis/v2/sports/lacrosse/pll/standings",
-                timeout=10
+                "https://statsapi.mlb.com/api/v1/schedule/postseason/series"
+                f"?season={season}&sportId=1&hydrate=team,seriesStatus",
+                timeout=15,
             ).json()
-            entries = resp.get("standings", {}).get("entries", [])
-            if not entries:
-                return "(PLL standings unavailable)"
 
-            # Sort by wins desc, then losses asc
-            def sort_key(e):
-                stats = {s["name"]: s["value"] for s in e.get("stats", [])}
-                return (-stats.get("wins", 0), stats.get("losses", 99))
+            today = datetime.now(_PT).date()
+            rows = []
+            for series in resp.get("series", []):
+                games = sorted(
+                    series.get("games", []),
+                    key=lambda g: (g.get("seriesGameNumber") or 0, g.get("officialDate") or ""),
+                )
+                if not games:
+                    continue
 
-            entries_sorted = sorted(entries, key=sort_key)
+                first = games[0]
+                finals = [g for g in games if g.get("status", {}).get("abstractGameState") == "Final"]
+                ref = finals[-1] if finals else first
+                status = (ref.get("seriesStatus") or {})
 
-            lines = ["PLL STANDINGS", "| # | Team | W | L |", "|---|---|---|---|"]
-            for rank, e in enumerate(entries_sorted, 1):
-                stats = {s["name"]: s["displayValue"] for s in e.get("stats", [])}
-                name = e.get("team", {}).get("displayName", "Unknown")
-                w = stats.get("wins", "?")
-                l = stats.get("losses", "?")
-                lines.append(f"| {rank} | {name} | {w} | {l} |")
-            return "\n".join(lines)
-        except Exception as e:
-            log_event(f"Error fetching PLL standings (attempt {attempt+1}/{retries}): {e}")
-            if attempt == retries - 1:
-                return "(PLL standings unavailable)"
-            time.sleep(2)
-
-
-def get_pll_next_event():
-    """Return the matchups and times for the next PLL event weekend.
-
-    Retries on transient fetch errors — see get_pll_standings() for why this matters.
-    """
-    retries = 3
-    for attempt in range(retries):
-        try:
-            resp = requests.get(
-                "https://site.api.espn.com/apis/site/v2/sports/lacrosse/pll/scoreboard",
-                timeout=10
-            ).json()
-            events = resp.get("events", [])
-            if not events:
-                return "(No upcoming PLL games found)"
-
-            # Find the earliest upcoming event date, then list all games on that date cluster
-            future_events = []
-            now_utc = datetime.now(timezone.utc)
-            for e in events:
-                raw_date = e.get("date", "")
                 try:
-                    dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-                    if dt > now_utc:
-                        future_events.append((dt, e))
-                except Exception:
-                    pass
+                    opens = datetime.strptime(first.get("officialDate", ""), "%Y-%m-%d").date()
+                except ValueError:
+                    opens = None
+                if not finals and (opens is None or (opens - today).days > 7):
+                    continue  # a bracket placeholder too far out to mean anything
 
-            if not future_events:
-                return "(No upcoming PLL games found)"
+                # Game 1's host is the higher seed, so it reads first in the matchup.
+                teams = first.get("teams", {})
+                away = teams.get("away", {}).get("team", {}).get("abbreviation", "?")
+                home = teams.get("home", {}).get("team", {}).get("abbreviation", "?")
+                label = (
+                    status.get("abbreviation")
+                    or status.get("shortName")
+                    or ref.get("seriesDescription", "?")
+                )
+                result = status.get("result")
+                if not result:
+                    result = f"Begins {opens.strftime('%b %-d')}" if opens else "Scheduled"
 
-            # Group by the date of the nearest event weekend (within 3 days of the first game)
-            future_events.sort(key=lambda x: x[0])
-            first_dt = future_events[0][0]
-            weekend_events = [(dt, e) for dt, e in future_events if (dt - first_dt).days <= 3]
+                rows.append((
+                    round_order.get(ref.get("gameType"), 9),
+                    opens or today,
+                    f"| {label} | {home} vs {away} | {result} |",
+                ))
 
-            lines = [f"PLL NEXT EVENT — {first_dt.astimezone(_PT).strftime('%B %-d, %Y')}"]
-            for dt, e in weekend_events:
-                name = e.get("name", "TBD")
-                time_str = _fmt_pt(e.get("date", ""))
-                lines.append(f"  {name} — {time_str}")
+            if not rows:
+                return "(No MLB postseason data available)"
+
+            rows.sort(key=lambda r: (r[0], r[1]))
+            lines = ["MLB PLAYOFFS", "| Round | Matchup | Status |", "|---|---|---|"]
+            lines += [r[2] for r in rows]
+
+            # Games actually on the slate in the next few days, with first pitch in PT.
+            upcoming = []
+            for series in resp.get("series", []):
+                for g in series.get("games", []):
+                    if g.get("status", {}).get("abstractGameState") != "Preview":
+                        continue
+                    try:
+                        when = datetime.strptime(g.get("officialDate", ""), "%Y-%m-%d").date()
+                    except ValueError:
+                        continue
+                    if not 0 <= (when - today).days <= 3:
+                        continue
+                    teams = g.get("teams", {})
+                    upcoming.append((
+                        g.get("gameDate", ""),
+                        f"  {(g.get('seriesStatus') or {}).get('shortDescription', 'Game')}: "
+                        f"{teams.get('away', {}).get('team', {}).get('abbreviation', '?')} @ "
+                        f"{teams.get('home', {}).get('team', {}).get('abbreviation', '?')}"
+                        f" — {_fmt_pt(g.get('gameDate', ''))}",
+                    ))
+            if upcoming:
+                upcoming.sort(key=lambda u: u[0])
+                lines.append("NEXT UP")
+                lines += [u[1] for u in upcoming[:5]]
+
             return "\n".join(lines)
         except Exception as e:
-            log_event(f"Error fetching PLL schedule (attempt {attempt+1}/{retries}): {e}")
+            log_event(f"Error fetching MLB playoff landscape (attempt {attempt+1}/{retries}): {e}")
             if attempt == retries - 1:
-                return "(PLL schedule unavailable)"
+                return "(MLB playoff data unavailable)"
             time.sleep(2)
 
 
-def get_padres_summary():
-    """Return last game result and next game for the San Diego Padres."""
-    try:
-        today = datetime.now().date()
-        start = (today - timedelta(days=7)).strftime("%Y-%m-%d")
-        end = (today + timedelta(days=10)).strftime("%Y-%m-%d")
-        url = (
-            f"https://statsapi.mlb.com/api/v1/schedule"
-            f"?sportId=1&teamId=135&startDate={start}&endDate={end}&hydrate=team,linescore"
-        )
-        resp = requests.get(url, timeout=10).json()
+def get_rangers_standings():
+    """Return the Metropolitan Division standings table (the Rangers' division).
 
-        last_game = None
-        next_game = None
-        today_utc = datetime.now(timezone.utc).date()
+    Note: api-web.nhle.com answers 307 to a bare request; requests follows
+    redirects by default, which is why this needs no special handling here but a
+    curl probe without -L looks like a dead endpoint.
+    """
+    retries = 3
+    for attempt in range(retries):
+        try:
+            resp = requests.get("https://api-web.nhle.com/v1/standings/now", timeout=15).json()
+            rows = [r for r in resp.get("standings", []) if r.get("divisionName") == "Metropolitan"]
+            if not rows:
+                return "(Rangers standings unavailable)"
 
-        for day in resp.get("dates", []):
-            for game in day.get("games", []):
-                state = game.get("status", {}).get("abstractGameState", "")
-                game_date_str = game.get("officialDate", "")
-                teams = game.get("teams", {})
-                home = teams.get("home", {})
-                away = teams.get("away", {})
+            rows.sort(key=lambda r: r.get("divisionSequence", 99))
+            lines = [
+                "METROPOLITAN DIVISION",
+                "| # | Team | GP | W | L | OTL | PTS |",
+                "|---|---|---|---|---|---|---|",
+            ]
+            for r in rows:
+                lines.append(
+                    f"| {r.get('divisionSequence', '?')} "
+                    f"| {(r.get('teamName') or {}).get('default', '?')} "
+                    f"| {r.get('gamesPlayed', '?')} | {r.get('wins', '?')} | {r.get('losses', '?')} "
+                    f"| {r.get('otLosses', '?')} | {r.get('points', '?')} |"
+                )
 
-                if state == "Final":
-                    last_game = game
-                elif state in ("Preview", "Scheduled") and next_game is None:
-                    next_game = game
-
-        parts = []
-
-        if last_game:
-            teams = last_game.get("teams", {})
-            home = teams.get("home", {})
-            away = teams.get("away", {})
-            home_name = home.get("team", {}).get("abbreviation", "?")
-            away_name = away.get("team", {}).get("abbreviation", "?")
-            home_score = home.get("score", "?")
-            away_score = away.get("score", "?")
-            game_date = last_game.get("officialDate", "")
-
-            # Determine if Padres (team 135) were home or away
-            padres_home = home.get("team", {}).get("id") == 135
-            if padres_home:
-                opp = away_name
-                padres_score = home_score
-                opp_score = away_score
-                location = "vs"
-            else:
-                opp = home_name
-                padres_score = away_score
-                opp_score = home_score
-                location = "@"
-
-            try:
-                outcome = "beat" if int(padres_score) > int(opp_score) else "lost to"
-            except Exception:
-                outcome = "vs"
-            parts.append(f"Last game ({game_date}): Padres {outcome} {opp} {location} {opp_score}, {padres_score}-{opp_score}")
-        else:
-            parts.append("Last game: N/A")
-
-        if next_game:
-            teams = next_game.get("teams", {})
-            home = teams.get("home", {})
-            away = teams.get("away", {})
-            home_name = home.get("team", {}).get("abbreviation", "?")
-            away_name = away.get("team", {}).get("abbreviation", "?")
-            game_date = next_game.get("officialDate", "")
-            game_datetime = next_game.get("gameDate", "")
-            padres_home = home.get("team", {}).get("id") == 135
-            if padres_home:
-                opp = away_name
-                location = "vs"
-            else:
-                opp = home_name
-                location = "@"
-            time_str = _fmt_pt(game_datetime) if game_datetime else game_date
-            parts.append(f"Next game: Padres {location} {opp} — {time_str}")
-        else:
-            parts.append("Next game: N/A")
-
-        return "\n".join(parts)
-    except Exception as e:
-        log_event(f"Error fetching Padres summary: {e}")
-        return "(Padres game data unavailable)"
+            nyr = next((r for r in rows if (r.get("teamAbbrev") or {}).get("default") == "NYR"), None)
+            if nyr:
+                streak = f"{nyr.get('streakCode', '')}{nyr.get('streakCount', '')}".strip()
+                lines.append(
+                    f"Rangers: {_ordinal(nyr.get('divisionSequence'))} in Metropolitan, "
+                    f"{nyr.get('wins', '?')}-{nyr.get('losses', '?')}-{nyr.get('otLosses', '?')}, "
+                    f"{nyr.get('points', '?')} pts"
+                    + (f", streak {streak}" if streak else "")
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            log_event(f"Error fetching Rangers standings (attempt {attempt+1}/{retries}): {e}")
+            if attempt == retries - 1:
+                return "(Rangers standings unavailable)"
+            time.sleep(2)
 
 
-def get_padres_standings():
-    """Return the Padres' current NL West division standing."""
-    try:
-        year = datetime.now().year
-        url = f"https://statsapi.mlb.com/api/v1/standings?leagueId=104&season={year}&standingsTypes=regularSeason"
-        resp = requests.get(url, timeout=10).json()
+def get_rangers_next_game():
+    """Return the Rangers' next scheduled game as a single line.
 
-        for rec in resp.get("records", []):
-            if rec.get("division", {}).get("id") != 203:  # 203 = NL West
-                continue
-            for tr in rec.get("teamRecords", []):
-                if tr.get("team", {}).get("id") == 135:  # 135 = Padres
-                    rank = tr.get("divisionRank", "?")
-                    wins = tr.get("wins", "?")
-                    losses = tr.get("losses", "?")
-                    gb = tr.get("gamesBack", "—")
-                    gb_str = f"{gb} GB" if gb and gb != "-" else "— (1st)"
-                    return f"Padres standing: {rank} in NL West, {wins}-{losses}, {gb_str}"
+    The week endpoint is small and current but empty in a week with no games (a
+    break, the offseason), so it falls back to the full season schedule.
+    """
+    retries = 3
+    endpoints = [
+        "https://api-web.nhle.com/v1/club-schedule/NYR/week/now",
+        "https://api-web.nhle.com/v1/club-schedule-season/NYR/now",
+    ]
+    for attempt in range(retries):
+        try:
+            games = []
+            for url in endpoints:
+                resp = requests.get(url, timeout=15).json()
+                games = [
+                    g for g in resp.get("games", [])
+                    if g.get("gameState") in ("FUT", "PRE", "LIVE", "CRIT")
+                ]
+                if games:
+                    break
 
-        return "(Padres standings unavailable)"
-    except Exception as e:
-        log_event(f"Error fetching Padres standings: {e}")
-        return "(Padres standings unavailable)"
+            if not games:
+                return "(No upcoming Rangers games found)"
+
+            games.sort(key=lambda g: g.get("startTimeUTC", ""))
+            game = games[0]
+            home = (game.get("homeTeam") or {})
+            away = (game.get("awayTeam") or {})
+            at_home = home.get("abbrev") == "NYR"
+            opponent = (away if at_home else home).get("abbrev", "?")
+            venue = (game.get("venue") or {}).get("default", "")
+            networks = [b.get("network") for b in game.get("tvBroadcasts", []) if b.get("network")]
+
+            line = (
+                f"Next game: Rangers {'vs' if at_home else '@'} {opponent}"
+                f" — {_fmt_pt(game.get('startTimeUTC', ''))}"
+            )
+            if venue:
+                line += f" ({venue})"
+            if networks:
+                line += f" — TV: {', '.join(networks)}"
+            if game.get("gameState") in ("LIVE", "CRIT"):
+                line += " — IN PROGRESS"
+            return line
+        except Exception as e:
+            log_event(f"Error fetching Rangers schedule (attempt {attempt+1}/{retries}): {e}")
+            if attempt == retries - 1:
+                return "(Rangers schedule unavailable)"
+            time.sleep(2)
 
 
 def main():
@@ -700,12 +714,10 @@ def main():
     uplifting_news = fetch_rss_feed(uplifting_rss_url, limit=1)
 
     # 2. Fetch sports data
-    pll_standings   = get_pll_standings()
-    pll_next_event  = get_pll_next_event()
-    redwoods_news   = fetch_news_query("California Redwoods lacrosse")
-    padres_summary  = get_padres_summary()
-    padres_standing = get_padres_standings()
-    padres_news     = fetch_news_query("San Diego Padres")
+    mlb_playoffs      = get_mlb_playoff_landscape()
+    rangers_standings = get_rangers_standings()
+    rangers_next_game = get_rangers_next_game()
+    rangers_news      = fetch_news_query("New York Rangers")
 
     weekend_tag = "  —  WEEKEND EDITION" if datetime.now().weekday() >= 5 else ""
 
@@ -718,12 +730,10 @@ def main():
             "us_news": us_news,
             "financial_news": financial_news,
             "tech_news": tech_news,
-            "pll_standings": pll_standings,
-            "pll_next_event": pll_next_event,
-            "redwoods_news": redwoods_news,
-            "padres_summary": padres_summary,
-            "padres_standing": padres_standing,
-            "padres_news": padres_news,
+            "mlb_playoffs": mlb_playoffs,
+            "rangers_standings": rangers_standings,
+            "rangers_next_game": rangers_next_game,
+            "rangers_news": rangers_news,
             "uplifting_news": uplifting_news,
         }
         print(json.dumps(payload))
@@ -756,21 +766,17 @@ RAW DATA — use ONLY this. Do NOT add outside information.
 
 --- SPORTS DATA ---
 
-[PLL STANDINGS]
-{pll_standings}
+[MLB PLAYOFFS]
+{mlb_playoffs}
 
-[PLL NEXT EVENT]
-{pll_next_event}
+[RANGERS STANDINGS]
+{rangers_standings}
 
-[CALIFORNIA REDWOODS NEWS]
-{redwoods_news}
+[RANGERS NEXT GAME]
+{rangers_next_game}
 
-[PADRES GAME DATA]
-{padres_summary}
-{padres_standing}
-
-[PADRES NEWS]
-{padres_news}
+[RANGERS NEWS]
+{rangers_news}
 
 --- UPLIFTING STORY ---
 {uplifting_news}
@@ -795,7 +801,7 @@ FINANCIAL NEWS: Major market moves, central bank policy decisions, significant e
 
 TECH NEWS: Significant product launches or major releases from notable companies, large acquisitions or mergers, major regulatory actions against tech companies, breakthrough research from credible institutions. Exclude: puzzle/game hints or answers (Wordle, Connections, Strands, crosswords), app-of-the-day filler, deals/shopping roundups, and "what to watch" listicles — these are never significant.
 
-SPORTS: Render PLL standings and schedule VERBATIM from the raw data — do not alter scores, records, or times. If the PLL standings or schedule data is one of its "(...unavailable)" / "(No upcoming PLL games found)" placeholder messages rather than real data, display that message as a single line of text instead of an empty table — never render an empty table. Summarize the California Redwoods and Padres news pools into 1–2 items each (only include items of genuine significance — roster moves, injuries, notable performances, contract news; skip fluff). Render the Padres game data (last game / next game / standing) VERBATIM from the raw data.
+SPORTS: Render the MLB playoff table and the Metropolitan Division standings VERBATIM from the raw data — do not alter series results, records, or times. If either is one of its "(...unavailable)" / "(No MLB postseason data available)" / "(No upcoming Rangers games found)" placeholder messages rather than real data, display that message as a single line of text instead of an empty table — never render an empty table. Render [RANGERS NEXT GAME] VERBATIM. Summarize the Rangers news pool into 1–2 items each (only include items of genuine significance — roster moves, injuries, notable performances, contract news; skip fluff). The news pool is a keyword search and may contain stories about the Texas Rangers baseball team or other unrelated "Rangers" — skip anything that is not about the NHL's New York Rangers.
 
 STORY DEPTH: Write 4-6 substantive sentences per story, drawing on the "Full text (excerpt)" when provided — include specifics: names, numbers, quotes, and context. For stories with only a short description, write what the source supports and no more; NEVER invent details not present in the raw data. For major, high-impact stories (wars, landmark legislation, large market moves, major acquisitions) write comprehensive coverage with full context — no upper sentence limit. Do not pad minor stories with filler.
 
@@ -853,19 +859,26 @@ SPORTS SECTION SPEC (section 7, after Technology):
 Use <h2> "Sports" as the section header.
 Divide into two labeled sub-blocks, each with a sub-header <h3> (font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#555; margin:16px 0 8px):
 
-  SUB-BLOCK A — "Premier Lacrosse League"
-    - PLL Standings table: same styling as the Markets table above (dark header row, alternating rows).
-      Header columns: # | Team | W | L
-      Populate with data from [PLL STANDINGS] verbatim. If [PLL STANDINGS] is its "(PLL standings unavailable)"
-      placeholder message rather than real data, display that message as a single <p> in color:#888 instead
-      of an empty table.
-    - Next Event: after the table, a small <p style="font-size:13px;color:#555;margin:8px 0 14px;"> listing the games from [PLL NEXT EVENT], one game per line using <br>. If [PLL NEXT EVENT] is its "(No upcoming PLL games found)" or "(PLL schedule unavailable)" placeholder message, display that message instead of an empty list.
-    - California Redwoods news: 1–2 items in STORY FORMAT.
+  SUB-BLOCK A — "MLB Playoffs"
+    - Playoff table: same styling as the Markets table above (dark header row, alternating rows).
+      Header columns: Round | Matchup | Status
+      Populate with the table rows from [MLB PLAYOFFS] verbatim. If [MLB PLAYOFFS] is its
+      "(No MLB postseason data available)" or "(MLB playoff data unavailable)" placeholder message rather
+      than real data, display that message as a single <p> in color:#888 instead of an empty table.
+    - If [MLB PLAYOFFS] includes a "NEXT UP" block, render those games after the table as a small
+      <p style="font-size:13px;color:#555;margin:8px 0 14px;">, one game per line using <br>. Omit this
+      paragraph entirely when there is no NEXT UP block.
 
-  SUB-BLOCK B — "San Diego Padres"
-    - Game recap block: a <div style="background:#f7f7f7;border-left:3px solid #1a1a1a;padding:10px 14px;margin-bottom:14px;font-size:14px;line-height:1.8;color:#333;">
-        showing Last game, Next game, and Standing from [PADRES GAME DATA] — three lines, labels in <strong>.
-    - Padres news: 1–2 items in STORY FORMAT.
+  SUB-BLOCK B — "New York Rangers"
+    - Metropolitan Division table: same styling as the Markets table above.
+      Header columns: # | Team | GP | W | L | OTL | PTS
+      Populate from [RANGERS STANDINGS] verbatim, and bold the New York Rangers row (font-weight:700).
+      If [RANGERS STANDINGS] is its "(Rangers standings unavailable)" placeholder message, display that
+      message as a single <p> in color:#888 instead of an empty table.
+    - Next game block: a <div style="background:#f7f7f7;border-left:3px solid #1a1a1a;padding:10px 14px;margin-bottom:14px;font-size:14px;line-height:1.8;color:#333;">
+        showing the "Rangers:" summary line from [RANGERS STANDINGS] and the [RANGERS NEXT GAME] line
+        verbatim — labels in <strong>.
+    - Rangers news: 1–2 items in STORY FORMAT. Skip anything not about the NHL's New York Rangers.
 
 Wrap the entire Sports section in: <div style="margin-bottom:28px;">
 
