@@ -3,7 +3,8 @@ import re
 import json
 import argparse
 import requests
-import feedparser
+import warnings
+import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -454,6 +455,91 @@ def fetch_news_query(query, limit=10, max_age_hours=72):
         return f"(Error fetching news for '{query}': {e})"
 
 
+_ATOM_NS = "{http://www.w3.org/2005/Atom}"
+
+# A category feed is tens of KB; this only exists to bound a hostile response.
+_MAX_FEED_BYTES = 5 * 1024 * 1024
+
+
+def _entries_from_soup(content, limit):
+    """Lenient tag-name pass, for feeds ElementTree can't or shouldn't parse.
+
+    Matches `item`/`entry` by tag name, so it is indifferent to namespaces, and it
+    does not expand DTD entities.
+    """
+    with warnings.catch_warnings():
+        # bs4 warns about XML through html.parser; that is deliberate here.
+        warnings.simplefilter("ignore")
+        soup = BeautifulSoup(content, "html.parser")
+
+    entries = []
+    for node in soup.find_all(["item", "entry"])[:limit]:
+        title = node.find("title")
+        desc = node.find(["description", "summary", "content"])
+        entries.append((
+            title.get_text().strip() if title else "No Title",
+            desc.get_text().strip() if desc else "No Description",
+        ))
+    return entries
+
+
+def _entries_from_etree(root, limit):
+    """RSS 2.0 first, then Atom. Returns [] if the feed is neither shape."""
+    items = root.findall("./channel/item")[:limit]
+    if items:
+        return [(
+            (i.findtext("title") or "No Title").strip(),
+            (i.findtext("description") or "No Description").strip(),
+        ) for i in items]
+
+    return [(
+        (e.findtext(f"{_ATOM_NS}title") or "No Title").strip(),
+        (e.findtext(f"{_ATOM_NS}summary")
+         or e.findtext(f"{_ATOM_NS}content")
+         or "No Description").strip(),
+    ) for e in root.findall(f"./{_ATOM_NS}entry")[:limit]]
+
+
+def _parse_feed_entries(content, limit):
+    """Return [(title, description)] for the first `limit` entries of an RSS or Atom feed.
+
+    Replaces feedparser, which was the only dependency in the tree needing a source
+    build: it pulls sgmllib3k, whose legacy setup.py fails in the routine sandbox and
+    — because pip builds the whole resolution set before installing any of it — took
+    every other package down with it. See ADR-012.
+
+    ElementTree returns byte-identical titles and descriptions to feedparser on the
+    well-formed WordPress feed this project reads. The BeautifulSoup pass covers
+    everything ElementTree can't use, and is reached in three ways, not just one:
+    malformed XML, a feed whose entries are namespaced (RSS 1.0/RDF, or RSS 2.0 with
+    a default xmlns) so ElementTree finds none, and a feed carrying a DTD. Each of
+    those would otherwise yield an empty Good News section with only a log line.
+    """
+    if len(content) > _MAX_FEED_BYTES:
+        # Refuse outright: nothing this large is the feed we asked for.
+        raise ValueError(f"feed is {len(content)} bytes, over the {_MAX_FEED_BYTES}-byte limit")
+
+    # ElementTree expands internal DTD entities, so a hostile feed could blow up
+    # memory. Entity declarations live in the prolog, so checking it is enough —
+    # and scoping the check there avoids tripping on "<!DOCTYPE" inside article text.
+    if b"<!doctype" in content[:4096].lower():
+        log_event("Feed carries a DTD; parsing it with the HTML parser instead of ElementTree")
+        return _entries_from_soup(content, limit)
+
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as e:
+        log_event(f"Feed is not well-formed XML ({e}); retrying with the HTML parser")
+        return _entries_from_soup(content, limit)
+
+    entries = _entries_from_etree(root, limit)
+    if not entries:
+        log_event("No RSS or Atom entries found by ElementTree (namespaced feed?); "
+                  "retrying with the HTML parser")
+        return _entries_from_soup(content, limit)
+    return entries
+
+
 def fetch_rss_feed(url, limit=1):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
@@ -462,17 +548,14 @@ def fetch_rss_feed(url, limit=1):
             log_event(f"RSS feed fetch got HTTP {resp.status_code} for {url}")
             return f"(Error fetching RSS feed: HTTP {resp.status_code})"
 
-        feed = feedparser.parse(resp.content)
-        entries = feed.entries[:limit]
+        entries = _parse_feed_entries(resp.content, limit)
 
         if not entries:
             log_event(f"RSS feed returned 200 but no parseable entries for {url}")
             return "(No RSS entries found)"
 
         news_text = ""
-        for i, entry in enumerate(entries):
-            title = entry.get('title', 'No Title')
-            desc = entry.get('summary', 'No Description')
+        for i, (title, desc) in enumerate(entries):
             news_text += f"Story {i+1}:\nTitle: {title}\nDescription: {desc}\n\n"
         return news_text
     except Exception as e:

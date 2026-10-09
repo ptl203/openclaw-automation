@@ -1,6 +1,6 @@
 # Routine: Timecard Reminder
 
-Exported 2026-09-28 from `claude.ai/code/routines` via the remote-trigger API.
+Exported 2026-10-08 from `claude.ai/code/routines` via the remote-trigger API.
 **This file is reference only — editing it changes nothing.** See `README.md` in this directory.
 
 ## Configuration
@@ -9,7 +9,7 @@ Exported 2026-09-28 from `claude.ai/code/routines` via the remote-trigger API.
 {
   "routine_id": "trig_015MTNH35B8Rq7dpkrACg3wt",
   "name": "Timecard Reminder",
-  "enabled": true,
+  "enabled": false,
   "cron_expression": "0 1 * * 2-6",
   "run_once_at": null,
   "model": "claude-sonnet-5",
@@ -32,8 +32,8 @@ Exported 2026-09-28 from `claude.ai/code/routines` via the remote-trigger API.
     "Claude_Code_Remote",
     "Google_Drive"
   ],
-  "last_fired_at": "2026-09-26T01:15:58.025796Z",
-  "next_run_at": "2026-09-29T01:15:10.581238962Z"
+  "last_fired_at": "2026-10-09T01:16:00.398641Z",
+  "next_run_at": "2026-10-10T01:15:10.581238962Z"
 }
 ```
 
