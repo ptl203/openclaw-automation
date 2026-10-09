@@ -593,39 +593,58 @@ def get_mlb_playoff_landscape():
 def get_rangers_standings():
     """Return the Metropolitan Division standings table (the Rangers' division).
 
-    Note: api-web.nhle.com answers 307 to a bare request; requests follows
-    redirects by default, which is why this needs no special handling here but a
-    curl probe without -L looks like a dead endpoint.
+    Uses ESPN rather than api-web.nhle.com: the NHL endpoints work from a normal
+    machine but Cloudflare refuses the routine sandbox's datacenter IP, so the
+    2026-10-09 run rendered a placeholder instead of a table. ESPN has served this
+    repo's sports data from the same sandbox for months. Records were checked
+    against the NHL API and match.
+
+    `level=3` is what nests divisions under each conference; without it ESPN
+    returns conference-level standings only. ESPN has no divisionRank stat — the
+    entries come back in standings order, so position in the list is the rank.
     """
     retries = 3
     for attempt in range(retries):
         try:
-            resp = requests.get("https://api-web.nhle.com/v1/standings/now", timeout=15).json()
-            rows = [r for r in resp.get("standings", []) if r.get("divisionName") == "Metropolitan"]
-            if not rows:
+            resp = requests.get(
+                "https://site.api.espn.com/apis/v2/sports/hockey/nhl/standings?level=3",
+                timeout=20,
+            ).json()
+
+            division = None
+            for conference in resp.get("children", []) or []:
+                for div in conference.get("children", []) or []:
+                    if "Metropolitan" in (div.get("name") or ""):
+                        division = div
+            entries = ((division or {}).get("standings") or {}).get("entries") or []
+            if not entries:
                 return "(Rangers standings unavailable)"
 
-            rows.sort(key=lambda r: r.get("divisionSequence", 99))
             lines = [
                 "METROPOLITAN DIVISION",
                 "| # | Team | GP | W | L | OTL | PTS |",
                 "|---|---|---|---|---|---|---|",
             ]
-            for r in rows:
+            nyr = None
+            for rank, entry in enumerate(entries, 1):
+                stats = {s.get("name"): s.get("displayValue") for s in entry.get("stats", [])}
+                team = entry.get("team", {})
                 lines.append(
-                    f"| {r.get('divisionSequence', '?')} "
-                    f"| {(r.get('teamName') or {}).get('default', '?')} "
-                    f"| {r.get('gamesPlayed', '?')} | {r.get('wins', '?')} | {r.get('losses', '?')} "
-                    f"| {r.get('otLosses', '?')} | {r.get('points', '?')} |"
+                    f"| {rank} | {team.get('displayName', '?')} "
+                    f"| {stats.get('gamesPlayed', '?')} | {stats.get('wins', '?')} "
+                    f"| {stats.get('losses', '?')} | {stats.get('otLosses', '?')} "
+                    f"| {stats.get('points', '?')} |"
                 )
+                if team.get("abbreviation") == "NYR":
+                    nyr = (rank, stats)
 
-            nyr = next((r for r in rows if (r.get("teamAbbrev") or {}).get("default") == "NYR"), None)
             if nyr:
-                streak = f"{nyr.get('streakCode', '')}{nyr.get('streakCount', '')}".strip()
+                rank, stats = nyr
+                streak = stats.get("streak")
                 lines.append(
-                    f"Rangers: {_ordinal(nyr.get('divisionSequence'))} in Metropolitan, "
-                    f"{nyr.get('wins', '?')}-{nyr.get('losses', '?')}-{nyr.get('otLosses', '?')}, "
-                    f"{nyr.get('points', '?')} pts"
+                    f"Rangers: {_ordinal(rank)} in Metropolitan, "
+                    f"{stats.get('wins', '?')}-{stats.get('losses', '?')}-{stats.get('otLosses', '?')}, "
+                    f"{stats.get('points', '?')} pts"
                     + (f", streak {streak}" if streak else "")
                 )
             return "\n".join(lines)
@@ -639,48 +658,59 @@ def get_rangers_standings():
 def get_rangers_next_game():
     """Return the Rangers' next scheduled game as a single line.
 
-    The week endpoint is small and current but empty in a week with no games (a
-    break, the offseason), so it falls back to the full season schedule.
+    Same ESPN-over-NHL-API reasoning as get_rangers_standings(). The team schedule
+    covers the whole season, so the next game is simply the earliest event still in
+    the future — no separate offseason fallback needed.
     """
     retries = 3
-    endpoints = [
-        "https://api-web.nhle.com/v1/club-schedule/NYR/week/now",
-        "https://api-web.nhle.com/v1/club-schedule-season/NYR/now",
-    ]
     for attempt in range(retries):
         try:
-            games = []
-            for url in endpoints:
-                resp = requests.get(url, timeout=15).json()
-                games = [
-                    g for g in resp.get("games", [])
-                    if g.get("gameState") in ("FUT", "PRE", "LIVE", "CRIT")
-                ]
-                if games:
-                    break
+            resp = requests.get(
+                "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/nyr/schedule",
+                timeout=20,
+            ).json()
 
-            if not games:
+            now_utc = datetime.now(timezone.utc)
+            upcoming = []
+            for event in resp.get("events", []) or []:
+                raw = event.get("date", "")
+                try:
+                    when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if when > now_utc:
+                    upcoming.append((when, event))
+
+            if not upcoming:
                 return "(No upcoming Rangers games found)"
 
-            games.sort(key=lambda g: g.get("startTimeUTC", ""))
-            game = games[0]
-            home = (game.get("homeTeam") or {})
-            away = (game.get("awayTeam") or {})
-            at_home = home.get("abbrev") == "NYR"
-            opponent = (away if at_home else home).get("abbrev", "?")
-            venue = (game.get("venue") or {}).get("default", "")
-            networks = [b.get("network") for b in game.get("tvBroadcasts", []) if b.get("network")]
+            upcoming.sort(key=lambda u: u[0])
+            event = upcoming[0][1]
+            competition = (event.get("competitions") or [{}])[0]
+
+            opponent, at_home = "?", False
+            for team in competition.get("competitors", []) or []:
+                is_rangers = team.get("team", {}).get("abbreviation") == "NYR"
+                if is_rangers:
+                    at_home = team.get("homeAway") == "home"
+                else:
+                    opponent = team.get("team", {}).get("abbreviation", "?")
+
+            venue = (competition.get("venue") or {}).get("fullName", "")
+            networks = []
+            for b in competition.get("broadcasts") or []:
+                name = (b.get("media") or {}).get("shortName") or b.get("shortName")
+                if name and name not in networks:
+                    networks.append(name)
 
             line = (
                 f"Next game: Rangers {'vs' if at_home else '@'} {opponent}"
-                f" — {_fmt_pt(game.get('startTimeUTC', ''))}"
+                f" — {_fmt_pt(event.get('date', ''))}"
             )
             if venue:
                 line += f" ({venue})"
             if networks:
                 line += f" — TV: {', '.join(networks)}"
-            if game.get("gameState") in ("LIVE", "CRIT"):
-                line += " — IN PROGRESS"
             return line
         except Exception as e:
             log_event(f"Error fetching Rangers schedule (attempt {attempt+1}/{retries}): {e}")
